@@ -1,29 +1,27 @@
-# OpMode · Asistente de Cliente para Haxball (v2.0.0)
+# OpMode · Asistente de Cliente para Haxball (v3.0.0)
 
 Script 100 % **lado cliente** que se pega en la consola DevTools dentro de
 [`https://www.haxball.com/play`](https://www.haxball.com/play). Dibuja ayudas
-visuales en tiempo real SOBRE el canvas del juego: líneas, radios, trayectoria
-y un **menú desplegable** tipo "mod menu".
+visuales sobre el canvas del juego —líneas, radios, trayectoria— y un **menú
+desplegable** para activarlas.
 
-**v2.0.0 cambia por completo el método de datos:** el cliente oficial **no
-expone ninguna API de posiciones** (lo verifiqué contra el `game-min.js`
-actual: ni `Room`, ni `window.g`, ni `getBallPosition`). Por eso ahora la
-detección es **por píxeles**: se lee directamente el canvas del juego y se
-identifican el campo, el balón y los jugadores **sin tocar el estado del
-juego**. Funciona en el cliente sin modificar.
+> **v3** usa el método correcto de lectura. El cliente oficial **no expone
+> ninguna API de posiciones** (se verificó contra su `game-min.js`). Además
+> renderiza con un **canvas 2D**, no WebGL. v2 asumía WebGL (hook de rAF +
+> `readPixels` completo): por eso **no dibujaba nada y bajaba los FPS**. v3
+> hace un `drawImage`→`getImageData` a **baja resolución** (~320 px de ancho,
+> acelerado por GPU, ~2-3 MB/s) cada 2 frames: **coste mínimo, sin tocar el
+> loop del juego**.
 
 ---
 
-## ⚠️ Aviso antes de nada
+## ⚠️ Aviso
 
-Esto es una **ayuda visual**. Dibuja encima del lienzo; no modifica físicas ni
-lee memoria. Aun así:
-
-- En **partidas clasificatorias, torneos o ligas** las asistencias y overlays
-  suelen estar **prohibidos** y sancionarse. Úsalo para **entrenar**, **salas
-  privadas** o **modo libre**.
-- La detección por píxeles puede fallar (balón "perdido" un instante, jugador
-  esquivo); no es un wallhack perfecto.
+Es una **ayuda visual** (dibuja encima del lienzo; no modifica físicas ni
+memoria). En **torneos, ligas o clasificatorias** los overlays suelen estar
+**prohibidos** y sancionarse. Úsalo para **entrenar**, **salas privadas** o
+**modo libre**. La detección por píxeles es aproximada: puede perder el balón
+un instante.
 
 ---
 
@@ -31,38 +29,27 @@ lee memoria. Aun así:
 
 | Ayuda | Descripción |
 |---|---|
-| 🎯 **Línea balón → arco** | Línea neón desde el balón hasta el arco **más lejano** (el rival), con aro en la puerta. |
-| 🧭 **Línea yo → balón** | Línea amarilla desde tu jugador al balón. El "yo" se elige con un clic (**🎯 Soy yo**) o en modo automático (el jugador más cercano al balón). |
-| ⭕ **Radio de alcance** | Círculo de "contacto" alrededor del balón (radio configurable) y de tu jugador (se ilumina en verde cuando estás en distancia de tiro). |
-| 📈 **Trayectoria** | Segmento de puntos con la dirección estimada del balón (velocidad derivada entre frames y suavizada). |
-| 🖥️ **Menú desplegable** | Panel superior derecha para activar/desactivar cada ayuda, grosor, color, modo demo y estado de la detección. |
-| 🧪 **Modo demo** | Si no hay campo visible (lobby, cargando, sala con otro estadio), dibuja un partido simulado animado para que veas las líneas **funcionando ahora mismo**. |
+| 🎯 **Línea balón → arco** | Línea neón desde el balón al arco **más lejano**, con aro en la puerta. |
+| 🧭 **Línea yo → balón** | Línea amarilla de tu jugador al balón. "Yo" = botón **🎯 Soy yo** (clic sobre tu avatar) o automático (el más cercano al balón). |
+| ⭕ **Radio de alcance** | Círculo de contacto alrededor del balón y de tu jugador (verde = en distancia de tiro). |
+| 📈 **Trayectoria** | Segmento con la dirección estimada del balón (velocidad derivada). |
+| 🧪 **Demo** | Si no hay campo visible (lobby, cargando), dibuja un partido simulado animado para ver las líneas al instante. |
+| 🖥️ **Menú (M)** | Toggles de ayudas, grosor, color, estado de detección, "Soy yo" y apagado. |
 
 ---
 
 ## 🛠️ Instalación
 
-### 1. Abre Haxball
-Entra en [`https://www.haxball.com/play`](https://www.haxball.com/play).
-Puedes pegar el script en el lobby o dentro de una sala; se auto-detecta el canvas.
-
-### 2. Abre la consola
-- **Chrome / Edge / Brave**: `F12` → pestaña **Console**.
-- **Firefox**: `F12` (o `Ctrl + Shift + K`) → pestaña **Consola**.
-- Si Chrome avisa *"Don't paste code you do not understand"*, pulsa **Allow pasting** una vez.
-
-### 3. Pega el código y pulsa Enter
-Abre [`opmode-hax.js`](./opmode-hax.js), cópialo **completo** y pégalo.
-
-### 4. Verifica
-Verás en consola algo como:
-```
-[OPMODE] v2.0.0 activado. Pulsa M para el menú, K para ocultar el overlay.
-[OPMODE] Lectura por píxeles: WebGL readPixels (en tiempo real)
-```
-Y el botón **🎯 OP · M** arriba a la derecha. Si estás en un campo con
-partida, verás las líneas; si no, enciende **Demo (sin campo)** en el menú
-para ver las líneas animadas de ejemplo.
+1. Entra en [`https://www.haxball.com/play`](https://www.haxball.com/play).
+   Puedes pegar **en la consola de la página principal** o **dentro del
+   iframe del juego**: el script se auto-adapta al documento de nivel superior.
+2. `F12` → pestaña **Console**. (Chrome: si avisa *"Don't paste code you do
+   not understand"*, pulsa **Allow pasting** una vez.)
+3. Abre [`opmode-hax.js`](./opmode-hax.js), cópialo **completo** y pégalo +
+   Enter.
+4. Verás el botón **🎯 OP · M** arriba a la derecha. En una sala verás las
+   líneas; si no, pulsa **M** y activa **Demo** para confirmar que el overlay
+   dibuja (funciona también en el lobby).
 
 ---
 
@@ -70,83 +57,63 @@ para ver las líneas animadas de ejemplo.
 
 | Tecla | Acción |
 |---|---|
-| **M** | Abrir / cerrar el menú desplegable |
+| **M** | Abrir / cerrar menú |
 | **N** | Línea balón → arco |
 | **J** | Línea yo → balón |
-| **B** | Radio de alcance (círculos) |
-| **V** | Trayectoria del balón |
+| **B** | Radio de alcance |
+| **V** | Trayectoria |
 | **K** | Mostrar / ocultar todo el overlay |
 
-Los atajos se ignoran mientras escribes en el chat.
+### Fijar "yo"
+- Menú → **🎯 Soy yo** → clic sobre tu avatar.
+- O `OpMode.setMe(400, 200)` / `OpMode.setMe({x: 400, y: 200})`.
+- `OpMode.resetMe()` vuelve a modo automático.
 
-### Cómo fijar "yo"
-- Botón **🎯 Soy yo** del menú → haz clic sobre tu jugador en el campo. Queda
-  guardado hasta recargar.
-- O desde consola: `OpMode.setMe(400, 200)` / `OpMode.setMe({x: 400, y: 200})`.
-- Desactiva **"Yo" automático** para que el script no lo re-identifique.
-
-### API de consola
+### API
 ```js
-OpMode.state                      // { source, ball, me, field, vis }
-OpMode.toggle('lineBallGoal')     // 'lineBallGoal' | 'lineMeBall' | 'radius' | 'trajectory' | 'demo' | 'overlay'
-OpMode.setMe(400, 200)            // fija tu posición (coords del campo)
-OpMode.pickMe()                   // modo "clic sobre mi jugador"
-OpMode.resetMe()                  // vuelve al modo automático
-OpMode.setDataSource(fn)          // fuente de datos externa (AVANZADO, ver abajo)
-OpMode.destroy()                  // apaga todo y limpia listeners
+OpMode.state                    // { source, ball, me, field, vis }
+OpMode.toggle('lineBallGoal')   // 'lineBallGoal' | 'lineMeBall' | 'radius' | 'trajectory' | 'demo' | 'overlay'
+OpMode.pickMe() / OpMode.setMe(x,y) / OpMode.resetMe()
+OpMode.setDataSource(fn)        // fuente externa { me:{x,y,team}, ball:{x,y} } · null para volver a píxeles
+OpMode.destroy()                // apaga todo
 ```
 
 ---
 
-## 🔍 Cómo funciona la detección por píxeles
+## 🔍 Cómo funciona (y por qué no baja los FPS)
 
-1. **Se localiza el canvas** del juego (el más grande, dentro del iframe
-   `game.html`).
-2. **Se captura un frame** en el *momento exacto*: Haxball renderiza con
-   WebGL y borra el buffer tras pintar (no se puede leer con
-   `getImageData`/`drawImage` desde fuera). El script envuelve el
-   `requestAnimationFrame` del iframe **una sola vez**, de modo que su
-   lectura (vía `gl.readPixels`) corre justo después de que el juego dibuje y
-   antes de que el navegador limpie el buffer.
-3. **Se baja la resolución** a una cuadrícula pequeña (~360 px de ancho) para
-   analizarla a 60 fps con coste mínimo.
-4. **Se detecta el campo** por su color verde dominante (autocalibrado contra
-   el letterbox), **el balón** (mancha blanca compacta y redonda) y **los
-   jugadores** (siluetas de color de equipo) mediante componentes conexas.
-5. Esas posiciones se convierten a coordenadas de mundo (800×400) y se
-   dibujan sobre el overlay.
+1. Se localiza el `<canvas>` 2D del juego (el más grande; si está vacío,
+   prueba el siguiente candidato).
+2. Cada 2 frames se copia a un canvas de caché con `drawImage` a **~320 px**
+   de ancho (escala hecha por la GPU) y se lee `getImageData` de esa miniatura
+   (~200 KB por lectura, no 8 MB). **No se usa `readPixels` ni se toca el
+   `requestAnimationFrame` del juego.**
+3. Sobre la miniatura se detecta el **campo** por su verde (con EMA para que
+   no vibre), el **balón** (mancha blanca compacta/redonda con continuidad
+   temporal) y los **jugadores** (manchas rojas/azules).
+4. Se mapea a coordenadas de mundo (800×400) y se dibuja sobre un canvas
+   overlay (`position:fixed`, `pointer-events:none`). El letterbox se corrige
+   gracias al rectángulo verde detectado.
 
-`glEvery` y `sampleWTarget` (al inicio del script) ajustan precisión vs.
-coste.
-
-### Fallback
-Si el contexto WebGL no estuviera disponible, el script intenta leer el canvas
-vía `drawImage` a un canvas 2D. En cualquier caso, **no hay ningún acceso de
-bajo nivel**: solo se leen los píxeles ya renderizados por el cliente.
+Ajustes de rendimiento/precisión al inicio del script:
+- `sampleWTarget` (ancho del análisis, 320 por defecto).
+- `tickEvery` (análisis cada N frames; 2 ≈ 30 fps de lectura, invisibles).
 
 ---
 
-## 🔌 Fuentes de datos por API (opcional / avanzado)
+## 🔌 Fuente de datos por API (opcional)
 
-La lectura por píxeles es el método **por defecto y recomendado**. Además, el
-script comprueba si el cliente expone una API (algún mod o herramienta) y si
-es así la usa como fuente *más precisa*:
+La detección por píxeles es la **única que funciona en el cliente oficial sin
+modificar** (comprobado: `game-min.js` actual no expone `Room`/`g`/etc.;
+ChasmSolacer está desactualizado para este bundle). Aun así puedes enchufar tu
+propia fuente:
 
-1. **Engine `g`** del iframe (tipo `client_bot_utils.js` de ChasmSolacer).
-2. **Room API** (`Room`/`room` con `getPlayerList()` y `getBallPosition()`).
-3. **Custom** — la que tú conectas:
-   ```js
-   OpMode.setDataSource(() => ({
-     me:   { x: 400, y: 200, team: 1 },
-     ball: { x: 300, y: 150 }
-   }));
-   ```
-   Pasa `null` para volver a píxeles.
-
-> ⚠️ Nota sobre **ChasmSolacer / Haxball-Client-Expansion**: su `game-min.js`
-> modificado está construido para una versión antigua del bundle (hash
-> `15ee796a`), y el cliente actual es otro (`0349dd60`). Puede **no** funcionar
-> hoy. Por eso OpMode v2 **no depende de él**.
+```js
+OpMode.setDataSource(() => ({
+  me:   { x: 400, y: 200, team: 1 },
+  ball: { x: 300, y: 150 }
+}));
+```
 
 ---
 
@@ -154,30 +121,14 @@ es así la usa como fuente *más precisa*:
 
 | Problema | Solución |
 |---|---|
-| No veo el botón 🎯 OP | Asegúrate de pegar en la consola de `haxball.com/play` (no en la del iframe ni en otra pestaña). Pulsa **K**. |
-| Líneas no aparecen en una sala | Espera 2-3 s. Verifica en el menú el estado: *"PÍXELES (buscando campo)"* → aún no ve el campo (estadio poco habitual, fondo oscuro, letreros); activa **Demo** para confirmar que el overlay dibuja. |
-| Muestra *PÍXELES · sin balón* | Hay campo pero no detecta el balón (está en zona con mucho blanco, scoreboard, descanso, etc.). Aguanta unos frames; se recupera solo. |
-| El balón salta / parpadea | Es normal: la detección es por color. Sube `sampleWTarget` o baja `glEvery` para más precisión. |
-| No detecta formaciones completas (jugadores) | Los avatares personalizados pueden no tener borde de color; solo se marcan los de color puro de equipo. La línea yo→balón necesita tu jugador: úsalo con **🎯 Soy yo**. |
-| Atajos no responden | Haz clic dentro del campo para dar foco al iframe; el script escucha en ambos documentos. No escribas en el chat. |
-| Bajo rendimiento | Reduce la lectura: sube `glEvery` a 2 o baja `sampleWTarget` a 240 (constantes al inicio del script) y desactiva ayudas que no uses. |
-| No se guarda mi configuración | Los ajustes se guardan en `localStorage`. Bloqueadores/Brave Shield pueden impedirlo; no es crítico. |
-| Recargué la página | La instancia murió. Vuelve a pegar el script (la configuración guardada se restaura). |
-| Quiero borrarlo todo | `OpMode.destroy()` o `F5`. |
-
----
-
-## 🧠 Notas técnicas
-
-- Se envuelve el `requestAnimationFrame` del iframe (después del del juego,
-  orden FIFO) para leer el buffer WebGL mientras es válido.
-- El análisis usa máscaras de color + etiquetado de componentes conexas sobre
-  un downsample; el campo se autocalibra cada frame (suavizado exponencial).
-- El overlay es un `<canvas>` propio con `position:fixed`, `z-index` alto y
-  `pointer-events:none`; no interfiere con el ratón del juego salvo en el modo
-  "Soy yo" (clic puntual).
-- Coordenadas: estadio estándar **800×400**; `1=Rojo`, `2=Azul`. El arco rival
-  por defecto es el más alejado del balón.
+| No veo el botón 🎯 OP | Pégaste en la consola equivocada (otra pestaña/dominio). Pega en `haxball.com/play`, cualquiera de sus documentos (o ambos). Pulsa **K** por si estaba oculto. |
+| Líneas no aparecen en sala | Espera 2-3 s; mira el **estado del menú**: `campo ✗` = no detecta el estadio (verde claro/oscuro raro): activa **Demo**; `campo ✓ · sin balón` = espera a que el balón esté visible y quieto cerca del medio. |
+| Demo SÍ se ve pero en la sala no | El campo/balón tiene colores que no encajan con los umbrales. Dime el estadio y ajusto `detectField`/`detectBall`, o usa `OpMode.setDataSource`. |
+| El balón parpadea | Sube `sampleWTarget` o baja `tickEvery` a 1. |
+| No detecta mi jugador (yo ✗) | Usa **🎯 Soy yo** (clic sobre tu avatar). La detección automática necesita que el avatar tenga borde de color de equipo. |
+| ¿FPS? | Este método NO lee el canvas completo ni intercepta el loop del juego. Si notaras algo, sube `tickEvery` a 3. |
+| Recargué la página | Vuelve a pegar el script (la configuración se conserva en `localStorage`). |
+| Borrarlo todo | `OpMode.destroy()` o `F5`. |
 
 ---
 
