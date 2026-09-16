@@ -1,207 +1,187 @@
-# OpMode · Asistente de Cliente para Haxball
+# OpMode · Asistente de Cliente para Haxball (v2.0.0)
 
-Script 100 % **lado cliente** que se inyecta desde la consola DevTools dentro de
+Script 100 % **lado cliente** que se pega en la consola DevTools dentro de
 [`https://www.haxball.com/play`](https://www.haxball.com/play). Dibuja ayudas
-visuales en tiempo real sobre el canvas del juego sin modificar ni el servidor
-ni el estado físico de la sala.
+visuales en tiempo real SOBRE el canvas del juego: líneas, radios, trayectoria
+y un **menú desplegable** tipo "mod menu".
 
-```
-██ ██ ██ ██  ██             OP·MODE
-██   ██      ██  █████  ██▀▀▀  ██▄  ██▄  ███▀
-██   ██  ███  ██  ██    ██  ██ ██    ██ ▄ ██▄▄
-██   ██    ██ ██  ██    ██▄▄▄ ██▄▄  ██▄▄ ██
-     █████ ██        V1.0.0 · CLIENT ASSISTANT
-```
-
----
-
-## ⚠️ Aviso importante
-
-Esto es una **ayuda visual** (overlay de dibujo). **No** modifica físicas, no
-lee memoria del proceso ni inyecta paquetes: solo dibuja encima del lienzo del
-juego usando lo que EXPONE el propio cliente. Úsalo con responsabilidad:
-
-- No la uses en partidas clasificatorias, torneos o ligas donde los overlays
-  y asistencias estén prohibidos (en competición esto puede considerarse
-  trampa y suele sancionarse).
-- Es ideal para **entrenar**, **salas privadas**, **modo libre** o para
-  estudiar el comportamiento de la trayectoria/arcos.
+**v2.0.0 cambia por completo el método de datos:** el cliente oficial **no
+expone ninguna API de posiciones** (lo verifiqué contra el `game-min.js`
+actual: ni `Room`, ni `window.g`, ni `getBallPosition`). Por eso ahora la
+detección es **por píxeles**: se lee directamente el canvas del juego y se
+identifican el campo, el balón y los jugadores **sin tocar el estado del
+juego**. Funciona en el cliente sin modificar.
 
 ---
 
-## ✨ Funcionalidades
+## ⚠️ Aviso antes de nada
 
-| Ayuda visual | Descripción |
+Esto es una **ayuda visual**. Dibuja encima del lienzo; no modifica físicas ni
+lee memoria. Aun así:
+
+- En **partidas clasificatorias, torneos o ligas** las asistencias y overlays
+  suelen estar **prohibidos** y sancionarse. Úsalo para **entrenar**, **salas
+  privadas** o **modo libre**.
+- La detección por píxeles puede fallar (balón "perdido" un instante, jugador
+  esquivo); no es un wallhack perfecto.
+
+---
+
+## ✨ Qué hace
+
+| Ayuda | Descripción |
 |---|---|
-| 🎯 **Línea de tiro** | Cuando el jugador local tiene el balón (o está muy cerca de él), dibuja una línea con flecha desde tu jugador hacia la **puerta rival** y un aro en el centro de esa puerta. |
-| 🧭 **Guía al balón** | Si NO tienes el balón, se dibuja una guía a rayas (naranja) desde tu jugador hacia el balón para anticiparte a la jugada. |
-| ⭕ **Radio de alcance/contacto** | Círculo alrededor del jugador local con radio = radio del jugador + radio del balón (la distancia a la que "tocas" el balón). Se rellena de color cuando estás en contacto. |
-| 📈 **Trayectoria del balón** | Segmento de puntos extraído de la **velocidad estimada** del balón (derivada, no leída del servidor) para ver hacia dónde va. |
-| 📊 **HUD discreto** | Panel semitransparente sobre el canvas que confirma que el OpMode está activo, qué fuente de datos se usa, tu jugador local y el estado de la partida. |
+| 🎯 **Línea balón → arco** | Línea neón desde el balón hasta el arco **más lejano** (el rival), con aro en la puerta. |
+| 🧭 **Línea yo → balón** | Línea amarilla desde tu jugador al balón. El "yo" se elige con un clic (**🎯 Soy yo**) o en modo automático (el jugador más cercano al balón). |
+| ⭕ **Radio de alcance** | Círculo de "contacto" alrededor del balón (radio configurable) y de tu jugador (se ilumina en verde cuando estás en distancia de tiro). |
+| 📈 **Trayectoria** | Segmento de puntos con la dirección estimada del balón (velocidad derivada entre frames y suavizada). |
+| 🖥️ **Menú desplegable** | Panel superior derecha para activar/desactivar cada ayuda, grosor, color, modo demo y estado de la detección. |
+| 🧪 **Modo demo** | Si no hay campo visible (lobby, cargando, sala con otro estadio), dibuja un partido simulado animado para que veas las líneas **funcionando ahora mismo**. |
 
 ---
 
-## 🛠️ Instalación paso a paso
+## 🛠️ Instalación
 
 ### 1. Abre Haxball
-Entra en [`https://www.haxball.com/play`](https://www.haxball.com/play) y entra
-en una sala (aunque también funciona desde la lista de salas; el overlay se
-monta solo cuando detecta el canvas del juego).
+Entra en [`https://www.haxball.com/play`](https://www.haxball.com/play).
+Puedes pegar el script en el lobby o dentro de una sala; se auto-detecta el canvas.
 
-### 2. Abre la consola del navegador
-
-| Navegador | Atajo |
-|---|---|
-| Chrome / Brave / Edge | `F12` o `Ctrl + Shift + I` |
-| Firefox | `F12` o `Ctrl + Shift + K` |
-| Safari (no recomendado) | `Alt + Cmd + C` |
-
-Haz clic en la pestaña **Console / Consola**. Si hay mensajes previos, puedes
-limpiarlos con el botón 🚫 del panel (opcional).
+### 2. Abre la consola
+- **Chrome / Edge / Brave**: `F12` → pestaña **Console**.
+- **Firefox**: `F12` (o `Ctrl + Shift + K`) → pestaña **Consola**.
+- Si Chrome avisa *"Don't paste code you do not understand"*, pulsa **Allow pasting** una vez.
 
 ### 3. Pega el código y pulsa Enter
+Abre [`opmode-hax.js`](./opmode-hax.js), cópialo **completo** y pégalo.
 
-- Abre el archivo [`opmode-hax.js`](./opmode-hax.js).
-- Cópialo **completo** y pégalo en la consola.
-- Pulsa **Enter**.
-
-> En Chrome, si pegas un bloque muy largo verás el mensaje *"Warning: Don’t
-> paste code that you do not understand"*. Es normal; pulsa **Allow pasting**
-> una vez si quieres, o pega en fragmentos.
-
-### 4. Verifica que se activó
-
-Deberías ver en la consola:
-
+### 4. Verifica
+Verás en consola algo como:
 ```
-[OPMODE] Activado. Pulsa B para ocultar/mostrar el overlay.
+[OPMODE] v2.0.0 activado. Pulsa M para el menú, K para ocultar el overlay.
+[OPMODE] Lectura por píxeles: WebGL readPixels (en tiempo real)
 ```
-
-y, cuando el juego detecte el canvas, un panel **OPMODE** en la esquina
-superior izquierda del campo. Si pegas dos veces el script, no se duplica:
-te avisa de que ya hay una instancia activa.
+Y el botón **🎯 OP · M** arriba a la derecha. Si estás en un campo con
+partida, verás las líneas; si no, enciende **Demo (sin campo)** en el menú
+para ver las líneas animadas de ejemplo.
 
 ---
 
-## ⌨️ Controles y atajos
+## ⌨️ Controles
 
 | Tecla | Acción |
 |---|---|
-| **M** | Activar/desactivar las líneas de asistencia (tiro al arco + guía al balón) |
-| **N** | Activar/desactivar el radio de alcance/contacto |
-| **V** | Activar/desactivar la trayectoria estimada del balón |
-| **B** | Mostrar/ocultar todo el overlay (HUD incluido) |
+| **M** | Abrir / cerrar el menú desplegable |
+| **N** | Línea balón → arco |
+| **J** | Línea yo → balón |
+| **B** | Radio de alcance (círculos) |
+| **V** | Trayectoria del balón |
+| **K** | Mostrar / ocultar todo el overlay |
 
-Los atajos se ignoran mientras estés escribiendo en el chat (input enfocado).
+Los atajos se ignoran mientras escribes en el chat.
 
-### API de consola (avanzado)
+### Cómo fijar "yo"
+- Botón **🎯 Soy yo** del menú → haz clic sobre tu jugador en el campo. Queda
+  guardado hasta recargar.
+- O desde consola: `OpMode.setMe(400, 200)` / `OpMode.setMe({x: 400, y: 200})`.
+- Desactiva **"Yo" automático** para que el script no lo re-identifique.
 
-El script expone `window.OpMode` para controlarlo desde la consola:
-
+### API de consola
 ```js
-OpMode.state                 // { lines, radius, trajectory, overlay, source, me }
-OpMode.toggle('line')        // alterna 'line' | 'radius' | 'trajectory' | 'overlay'
-OpMode.setMe('TuNick')       // fija el jugador local por nick exacto
-OpMode.setMe(7)              // o por id numérico
-OpMode.calibrate(4, -2)      // ajuste fino de alineación en px (x, y)
-OpMode.destroy()             // apaga todo y limpia listeners
+OpMode.state                      // { source, ball, me, field, vis }
+OpMode.toggle('lineBallGoal')     // 'lineBallGoal' | 'lineMeBall' | 'radius' | 'trajectory' | 'demo' | 'overlay'
+OpMode.setMe(400, 200)            // fija tu posición (coords del campo)
+OpMode.pickMe()                   // modo "clic sobre mi jugador"
+OpMode.resetMe()                  // vuelve al modo automático
+OpMode.setDataSource(fn)          // fuente de datos externa (AVANZADO, ver abajo)
+OpMode.destroy()                  // apaga todo y limpia listeners
 ```
 
 ---
 
-## 🔌 Compatibilidad y fuentes de datos (cómo funciona)
+## 🔍 Cómo funciona la detección por píxeles
 
-El script **no lee el renderizador** a lo bruto: busca una *fuente de datos*
-que el propio cliente (o modificaciones conocidas) exponen en el contexto de la
-página, en este orden:
+1. **Se localiza el canvas** del juego (el más grande, dentro del iframe
+   `game.html`).
+2. **Se captura un frame** en el *momento exacto*: Haxball renderiza con
+   WebGL y borra el buffer tras pintar (no se puede leer con
+   `getImageData`/`drawImage` desde fuera). El script envuelve el
+   `requestAnimationFrame` del iframe **una sola vez**, de modo que su
+   lectura (vía `gl.readPixels`) corre justo después de que el juego dibuje y
+   antes de que el navegador limpie el buffer.
+3. **Se baja la resolución** a una cuadrícula pequeña (~360 px de ancho) para
+   analizarla a 60 fps con coste mínimo.
+4. **Se detecta el campo** por su color verde dominante (autocalibrado contra
+   el letterbox), **el balón** (mancha blanca compacta y redonda) y **los
+   jugadores** (siluetas de color de equipo) mediante componentes conexas.
+5. Esas posiciones se convierten a coordenadas de mundo (800×400) y se
+   dibujan sobre el overlay.
 
-1. **Room API** → cualquier objeto global con `getPlayerList()` y
-   `getBallPosition()` (p. ej. `Room`, `room`, o un objeto detectado
-   automáticamente).
-2. **Engine `g`** → el global `g` del motor si expone lista de jugadores y
-   posición del balón.
-3. **Custom** → una función que tú conectas con `OpMode.setDataSource(fn)`.
+`glEvery` y `sampleWTarget` (al inicio del script) ajustan precisión vs.
+coste.
 
-El overlay detecta el `<canvas>` más grande del documento (el escenario está
-dentro de un iframe `.gameframe` del mismo origen, pero el script escanea el
-documento superior y todos los iframes accesibles).
-
-### ¿No se dibujan las líneas?
-
-Si el HUD muestra **`SIN DATOS`**, significa que en tu navegador/versión no se
-encontró ninguna fuente de datos automática. Tienes varias opciones:
-
-**Opción A — Usa la extensión de cliente de ChasmSolacer**
-[Haxball-Client-Expansion](https://github.com/ChasmSolacer/Haxball-Client-Expansion)
-expone en el cliente muchas funciones del headless host (incluido el acceso a
-posiciones). Con el overrider puesto, el script suele encontrar la fuente por
-sí solo (navegadores Chromium).
-
-**Opción B — Conecta tu propia fuente de datos**
-
-```js
-OpMode.setDataSource(() => {
-  // Ejemplo con una variable de sala que ya tengas en la consola:
-  const ball = (typeof room !== 'undefined' && room.getBallPosition)
-    ? room.getBallPosition()
-    : null;
-  const me = /* tu jugador local: { x, y, team, name, id } */;
-  return { me, ball, players: [] };   // players es opcional
-});
-```
-
-La función se llama en cada frame; todo lo que devuelva se dibuja de inmediato.
-
-### ¿Qué pasa si "mi jugador" no se detecta?
-
-El script intenta, por este orden: `currentPlayerId`/`playerId` expuestos por la
-fuente → `CFG.meId`/`CFG.meName` → coincidencia con `localStorage.player_name`
-→ único jugador en la lista. Si falla, fíjalo tú:
-
-```js
-OpMode.setMe('TuNickExacto');
-// o
-OpMode.setMe(3);
-```
+### Fallback
+Si el contexto WebGL no estuviera disponible, el script intenta leer el canvas
+vía `drawImage` a un canvas 2D. En cualquier caso, **no hay ningún acceso de
+bajo nivel**: solo se leen los píxeles ya renderizados por el cliente.
 
 ---
 
-## 🐛 Solución de problemas (FAQ)
+## 🔌 Fuentes de datos por API (opcional / avanzado)
+
+La lectura por píxeles es el método **por defecto y recomendado**. Además, el
+script comprueba si el cliente expone una API (algún mod o herramienta) y si
+es así la usa como fuente *más precisa*:
+
+1. **Engine `g`** del iframe (tipo `client_bot_utils.js` de ChasmSolacer).
+2. **Room API** (`Room`/`room` con `getPlayerList()` y `getBallPosition()`).
+3. **Custom** — la que tú conectas:
+   ```js
+   OpMode.setDataSource(() => ({
+     me:   { x: 400, y: 200, team: 1 },
+     ball: { x: 300, y: 150 }
+   }));
+   ```
+   Pasa `null` para volver a píxeles.
+
+> ⚠️ Nota sobre **ChasmSolacer / Haxball-Client-Expansion**: su `game-min.js`
+> modificado está construido para una versión antigua del bundle (hash
+> `15ee796a`), y el cliente actual es otro (`0349dd60`). Puede **no** funcionar
+> hoy. Por eso OpMode v2 **no depende de él**.
+
+---
+
+## 🐛 Solución de problemas
 
 | Problema | Solución |
 |---|---|
-| No veo el panel OPMODE | Asegúrate de estar en `haxball.com/play` (la consola debe ser la del juego). Pulsa **B** por si el overlay estaba oculto. Recarga la página y vuelve a pegar. |
-| El panel dice `SIN DATOS` | Lee la sección *"¿No se dibujan las líneas?"*. Conéctate a una sala y espera 2-3 s (el escaneo es periódico), o usa `setDataSource`. |
-| Dice `jugador no identificado` | Tu nick no coincide con `localStorage.player_name` o eres espectador. Usa `OpMode.setMe(...)`. |
-| Las líneas están desalineadas | El campo dejas de encajar con el canvas (márgenes). Ajusta: `OpMode.calibrate(dx, dy)`. |
-| El balón no es visible al inicio de la jugada | `getBallPosition()` devuelve `null` si el partido no está en curso; es esperado. |
-| Los atajos no responden | Haz clic sobre el campo para dar foco al iframe y vuelve a intentarlo (el script escucha en ambos documentos). Verifica que no estés escribiendo en el chat. |
-| Bajo rendimiento / micro-pausas | El dibujo es un canvas 2D separado y corre dentro del mismo `requestAnimationFrame`; el coste es mínimo. Si notas algo, desactiva la trayectoria (V) o el radio (N). |
-| Después de cambiar de sala la UI se "rompe" | El juego a veces reconstruye el DOM; el overlay se re-monta solo en el siguiente ciclo. Si lo hubiera, recarga la página. |
-| Firefox no muestra nada | Firefox es compatible, pero **Chromium (Chrome/Edge/Brave) es el escenario recomendado**: Haxball usa canvas de baja latencia y algunos hacks de exposición de API son específicos de Chromium. |
-| Adblockers/extensions interfieren | Desactiva bloqueadores (incluido *Brave Shield*) para `haxball.com` y prueba de nuevo. |
-| Quiero borrarlo todo | `OpMode.destroy()` o simplemente `F5` (recargar la página). |
+| No veo el botón 🎯 OP | Asegúrate de pegar en la consola de `haxball.com/play` (no en la del iframe ni en otra pestaña). Pulsa **K**. |
+| Líneas no aparecen en una sala | Espera 2-3 s. Verifica en el menú el estado: *"PÍXELES (buscando campo)"* → aún no ve el campo (estadio poco habitual, fondo oscuro, letreros); activa **Demo** para confirmar que el overlay dibuja. |
+| Muestra *PÍXELES · sin balón* | Hay campo pero no detecta el balón (está en zona con mucho blanco, scoreboard, descanso, etc.). Aguanta unos frames; se recupera solo. |
+| El balón salta / parpadea | Es normal: la detección es por color. Sube `sampleWTarget` o baja `glEvery` para más precisión. |
+| No detecta formaciones completas (jugadores) | Los avatares personalizados pueden no tener borde de color; solo se marcan los de color puro de equipo. La línea yo→balón necesita tu jugador: úsalo con **🎯 Soy yo**. |
+| Atajos no responden | Haz clic dentro del campo para dar foco al iframe; el script escucha en ambos documentos. No escribas en el chat. |
+| Bajo rendimiento | Reduce la lectura: sube `glEvery` a 2 o baja `sampleWTarget` a 240 (constantes al inicio del script) y desactiva ayudas que no uses. |
+| No se guarda mi configuración | Los ajustes se guardan en `localStorage`. Bloqueadores/Brave Shield pueden impedirlo; no es crítico. |
+| Recargué la página | La instancia murió. Vuelve a pegar el script (la configuración guardada se restaura). |
+| Quiero borrarlo todo | `OpMode.destroy()` o `F5`. |
 
 ---
 
 ## 🧠 Notas técnicas
 
-- **Overlay**: se crea un `<canvas>` propio con `position:fixed`, `z-index` alto
-  y `pointer-events:none`, anclado al rectángulo del canvas del juego.
-- **Rendimiento**: el bucle usa `requestAnimationFrame` del documento del
-  juego (60–120 FPS según el equipo), sin tocar el loop de render del juego.
-- **Mapeo de coordenadas**: el campo estándar mide **800×400** unidades. El
-  script supone que el campo completo es visible y hace un mapeo lineal
-  mundo → píxel (`x` hacia abajo a la derecha, `y` hacia abajo).
-- **Equipos**: `1 = Rojo` (ataca puerta x=800), `2 = Azul` (ataca puerta x=0).
-  Si un estadio personalizado usa otras dimensiones/arcos, ajusta
-  `CFG.attackGoal` y `CFG.worldW/H` en el código.
-- **Velocidad del balón**: se estima derivando la posición entre frames y
-  suavizando con media exponencial (solo visual, nunca se lee del servidor).
+- Se envuelve el `requestAnimationFrame` del iframe (después del del juego,
+  orden FIFO) para leer el buffer WebGL mientras es válido.
+- El análisis usa máscaras de color + etiquetado de componentes conexas sobre
+  un downsample; el campo se autocalibra cada frame (suavizado exponencial).
+- El overlay es un `<canvas>` propio con `position:fixed`, `z-index` alto y
+  `pointer-events:none`; no interfiere con el ratón del juego salvo en el modo
+  "Soy yo" (clic puntual).
+- Coordenadas: estadio estándar **800×400**; `1=Rojo`, `2=Azul`. El arco rival
+  por defecto es el más alejado del balón.
 
 ---
 
-## 📦 Contenido del repositorio
+## 📦 Contenido
 
 ```
 opmode-hax/
@@ -209,10 +189,5 @@ opmode-hax/
 └── README.md        → esta guía
 ```
 
----
-
-## 📄 Licencia y exención
-
 Uso libre para fines educativos y de entrenamiento, bajo tu responsabilidad.
-No afiliado con Haxball ni con su equipo de desarrollo. Haxball es una marca de
-su respectivo propietario.
+No afiliado con Haxball ni con su equipo de desarrollo.
