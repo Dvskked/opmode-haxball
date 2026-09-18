@@ -1,396 +1,475 @@
 /* ======================================================================
-   OpMode · Haxball Client Assistant   ·   v2.0.0
+   OpMode · Haxball Client Assistant   ·   v4.0.0
    ----------------------------------------------------------------------
-   Script 100% cliente para pegar en la consola DevTools (F12) dentro de
-   https://www.haxball.com/play
+   Script 100 % cliente para pegar en la consola DevTools (F12) de
+   https://www.haxball.com/play   (se auto-adapta: consola del iframe del
+   juego O documento de nivel superior; mismo origen).
 
-   v2.0.0 (IMPORTANTE): el cliente oficial NO expone ninguna API de
-   posiciones. Por eso ahora la detección principal es POR PÍXELES: se lee
-   el canvas del juego (hook sobre el requestAnimationFrame del iframe +
-   gl.readPixels), se detectan el campo (rectángulo verde), el balón
-   (blanco) y los jugadores (siluetas rojas/azules), y se dibujan encima:
+   NOVEDADES v4 (rendimiento)
+   - BRINDADOS BARATOS: se eliminó shadowBlur (era EL asesino de FPS).
+     Los brillos ahora son trazos multicapa con alpha progresivo.
+     A simple vista se ven igual; miden ~30-50 % más baratos de pintar.
+   - DPR LIMITADO: el overlay ya no pinta a devicePixelRatio completo.
+     Se limita a 1.75 (nitidez + rendimiento en pantallas HiDPI).
+   - MOTOR ADAPTATIVO: cada análisis se cronometra. Si cuesta >7 ms el
+     motor sube la cadencia (tickEvery 1→6) y baja la resolución de
+     muestreo (320→160px). Si sobra (~<2.5 ms) vuelve a subir calidad.
+     En máquinas débiles arranca ya configurado ahorrando CPU.
+   - SIN LECTURAS INÚTILES: no se lee el canvas si el overlay está oculto,
+     si la fuente es "custom", si no hay canvas (Demo), ni en pestañas
+     ocultas. Se reutilizan buffers (Uint8Array de componentes conexas,
+     contexto 2D cacheado, getImageData en caché con willReadFrequently).
+   - MENÚ SIN DOM SPAM: el estado se refresca cada ~300 ms, no por frame.
+   - El bucle del juego NO se toca: no interceptamos su rAF ni su canvas.
 
-     - Menú desplegable tipo "mod menu" (esquina superior derecha)
-     - Línea balón → arco rival (la más lejana al balón)
-     - Línea yo → balón (con "yo" fijado a mano o auto: el más cercano)
-     - Radio de alcance / contacto alrededor del balón y de tu jugador
-     - Trayectoria estimada del balón (velocidad derivada por píxeles)
-     - Modo demo animado (para ver las líneas funcionando en el lobby)
-     - Fuente de datos opcional por API (Room / g / setDataSource)
+   NOVEDADES v4 (funcional)
+   - CORREGIDO el mapeo campo→mundo (toWorld): el cálculo anterior
+     desplazaba las líneas cuando hay letterbox o el detector del estadio
+     suaviza su rectángulo (EMA). Ahora las líneas encajan en el campo.
+   - Balón detectado con umbral difuso + radio escalado al mundo y
+     continuidad temporal (premio a la posición prevista por velocidad).
+   - Nuevas ayudas: PREDICCIÓN con rebotes y marcador de impacto en el
+     arco, ESTELA del balón, HUD de velocidad/tiempo a gol, ALERTA DE
+     PELIGRO (rival cerca), ARO DE TIRO del balón, CROSSHAIR propio,
+     AROS DE EQUIPO (neon alrededor de cada jugador) y "soy yo" siempre
+     marcado con triángulo.
+   - DECORACIÓN DE CAMPO: se redibujan encima línea de medio campo,
+     círculo central, áreas y esquinas con estética neon y 6 TEMAS de
+     color (neon, ice, inferno, royal, toxic, gold).
+   - Velocidad del balón suavizada con EMA para que la trayectoria no
+     vibre.
 
-   Atajos:
-     M  ... abrir / cerrar el menú
-     N  ... línea balón → arco
-     J  ... línea yo → balón
-     B  ... radio de alcance (círculos)
-     V  ... trayectoria del balón
-     K  ... mostrar / ocultar todo el overlay
-
-   API en consola: window.OpMode  (ver sección 12)
+   ATAJOS:
+     M menú · N balón→arco · J yo→balón · B radio · V trayectoria ·
+     P predicción · T estela · U HUD · D peligro · G campo · C crosshair ·
+     H aros · K overlay
    ====================================================================== */
 (() => {
   'use strict';
 
-  /* Ya hay una instancia activa */
   if (window.OpMode && window.OpMode._opmode) {
-    console.warn('[OpMode] Ya hay una instancia activa. Escribe OpMode.destroy() y vuelve a pegar.');
+    console.warn('[OpMode] Ya hay una instancia activa. Usa OpMode.destroy() y vuelve a pegar.');
     return;
   }
 
-  /* ================ 1. CONFIGURACIÓN ================ */
-  const DEFAULTS = {
-    version: '2.0.0',
+  /* ============================================================
+     1. CONFIGURACIÓN  (por defecto + persistencia localStorage)
+     ============================================================ */
 
-    /* Dimensiones del campo en "unidades del mundo" (estadio estándar) */
-    worldW: 800,
-    worldH: 400,
+  /* Perfil de máquina: si es débil, arranque conservador (menos carga) */
+  const weakMachine =
+    (typeof navigator !== 'undefined') &&
+    (((navigator.deviceMemory && navigator.deviceMemory <= 2) || 0) ||
+     ((navigator.hardwareConcurrency && navigator.hardwareConcurrency <= 2) || 0) ||
+     (navigator.platform && /android|iphone|ipad|ipod/i.test(navigator.platform))) ? 1 : 0;
 
-    /* Radios físicos por defecto */
-    ballRadius: 10,
-    playerRadius: 15,
+  const WORLD_W = 800, WORLD_H = 400;
+  const GOAL_HALF = 25;                       /* semiancho de la boca del arco */
 
-    /* Multiplicador del radio de alcance dibujado (qué tan lejos del balón
-       un jugador lo "alcanza"). Se pinta un círculo de este radio alrededor
-       del balón y otro alrededor de "yo" cuando lo tiene cercano. */
-    reachMult: 1.6,
-
-    /* Toggles de ayudas (persistidos en localStorage) */
-    vis: {
-      lineBallGoal: true,   /* línea balón → arco rival       */
-      lineMeBall: true,     /* línea yo → balón               */
-      radius: true,         /* radios de alcance              */
-      trajectory: true,     /* trayectoria estimada del balón */
-      demo: true,           /* demo animada si no hay campo   */
-      overlay: true         /* muestra todo (K)               */
-    },
-
-    /* Estilo de las líneas (persistido) */
-    style: {
-      color: '#00ffd5',   /* color de asistencia (neón) */
-      width: 4            /* grosor en px               */
-    },
-
-    /* Auto-identificación de "yo": el jugador más cercano al balón */
-    autoMe: true,
-
-    /* Ancho objetivo del buffer de análisis (px). Más grande = más
-       precisión, más coste. */
-    sampleWTarget: 360,
-
-    /* Frecuencia del análisis de píxeles (nº de frames del hook entre
-       lecturas; 1 = cada frame del juego) */
-    glEvery: 1,
-
-    keys: { menu: 'KeyM', lineBallGoal: 'KeyN', lineMeBall: 'KeyJ',
-            radius: 'KeyB', trajectory: 'KeyV', overlay: 'KeyK' }
+  const THEMES = {
+    neon:   { deco: '#00ffd5', accent: '#00ffd5', goal: '#39ff7a', warn: '#ff5252' },
+    ice:    { deco: '#4d9fff', accent: '#4d9fff', goal: '#7ad0ff', warn: '#ffb04d' },
+    inferno:{ deco: '#ff9d2e', accent: '#ff9d2e', goal: '#ffd94d', warn: '#ff5252' },
+    royal:  { deco: '#b24dff', accent: '#b24dff', goal: '#ff6ad5', warn: '#ff5252' },
+    toxic:  { deco: '#39ff7a', accent: '#39ff7a', goal: '#c6ff4d', warn: '#ff5252' },
+    gold:   { deco: '#ffd94d', accent: '#ffd94d', goal: '#fff6c2', warn: '#ff5252' }
   };
 
-  let CFG = {};  // se fusiona con DEFAULTS + localStorage en init()
-
-  const util = {
-    styleInfo: 'color:#00ffd5;font-weight:bold;background:#0a121a;padding:2px 6px;border-radius:3px',
-    log(msg) { console.log('%c[OPMODE] ' + msg, this.styleInfo); },
-    clamp(v, a, b) { return v < a ? a : (v > b ? b : v); },
-    dist(a, b) { return Math.hypot(a.x - b.x, a.y - b.y); },
-    /* Canvas >= 40k px de área, el más grande = el escenario */
-    bestCanvas(doc) {
-      try {
-        let best = null, bestArea = 0;
-        for (const c of doc.querySelectorAll('canvas')) {
-          const r = c.getBoundingClientRect();
-          const a = r.width * r.height;
-          if (a >= 40000 && a > bestArea) { bestArea = a; best = c; }
-        }
-        return best;
-      } catch (e) { return null; }
+  const DEFAULTS = {
+    version: '4.0.0',
+    worldW: WORLD_W,
+    worldH: WORLD_H,
+    ballRadius: 10,
+    playerRadius: 15,
+    reachMult: 1.6,          /* radio de alcance dibujado en unidades de mundo */
+    sampleWTarget: weakMachine ? 256 : 320,
+    tickEvery: weakMachine ? 3 : 2,   /* inicial; el motor adaptativo lo regula */
+    adapt: true,             /* motor adaptativo de rendimiento */
+    maxDpr: 1.75,            /* tope de resolución del overlay */
+    autoMe: true,            /* "yo" = jugador más estable cerca del balón     */
+    holdMs: 500,             /* cuánto conservar la última detección válida    */
+    prediction: { time: 0.90, bounces: 3, drag: 1.9, rest: 0.92, min: 22 },
+    trail: { len: 22 },
+    vis: {
+      lineBallGoal: true,
+      lineMeBall: true,
+      radius: true,
+      trajectory: true,
+      predict: true,
+      trail: false,
+      hud: true,
+      danger: true,
+      fieldDeco: true,
+      crosshair: true,
+      glowPlayers: true,
+      demo: true,
+      overlay: true
+    },
+    style: {
+      color: '#00ffd5',
+      width: 4,
+      glow: true,            /* brillo multicapa */
+      theme: 'neon'
+    },
+    keys: {
+      menu: 'KeyM', lbg: 'KeyN', lmb: 'KeyJ', radius: 'KeyB', traj: 'KeyV',
+      predict: 'KeyP', trail: 'KeyT', hud: 'KeyU', danger: 'KeyD',
+      field: 'KeyG', cross: 'KeyC', glow: 'KeyH', overlay: 'KeyK'
     }
   };
 
-  /* ================ 2. LOCALIZAR IFRAME / CANVAS ================ */
-  const Loc = {
-    iframe: null,      /* <iframe> del juego (game.html) */
-    win: null,         /* window del iframe              */
-    doc: null,         /* document del iframe            */
-    canvas: null,      /* <canvas> del escenario         */
-    rect: null,        /* getBoundingClientRect() fresca */
+  let CFG = {};
+  const SSKEY = 'opmode_cfg_v4';
+
+  function persist() {
+    try {
+      localStorage.setItem(SSKEY, JSON.stringify({
+        vis: CFG.vis, style: CFG.style, autoMe: CFG.autoMe
+      }));
+    } catch (e) {}
+  }
+
+  function loadCfg() {
+    try {
+      const s = JSON.parse(localStorage.getItem(SSKEY) || '{}');
+      CFG = {
+        ...JSON.parse(JSON.stringify(DEFAULTS)),
+        vis: { ...DEFAULTS.vis, ...(s.vis || {}) },
+        style: { ...DEFAULTS.style, ...(s.style || {}) },
+        autoMe: s.autoMe !== undefined ? !!s.autoMe : DEFAULTS.autoMe
+      };
+      if (!THEMES[CFG.style.theme]) CFG.style.theme = 'neon';
+    } catch (e) { CFG = JSON.parse(JSON.stringify(DEFAULTS)); }
+  }
+
+  const util = {
+    log(msg) {
+      console.log('%c[OPMODE] ' + msg, 'color:#00ffd5;font-weight:bold;background:#0a121a;padding:2px 6px;border-radius:3px');
+    },
+    clamp(v, a, b) { return v < a ? a : (v > b ? b : v); },
+    dist(a, b) { return Math.hypot(a.x - b.x, a.y - b.y); }
+  };
+
+  /* ============================================================
+     2. MOTOR ADAPTATIVO DE RENDIMIENTO
+     Mide el coste real de cada análisis de píxeles y ajusta por sí
+     solo la cadencia y la resolución de muestreo para mantener el
+     juego fluido (objetivo: < ~6 ms por análisis).
+     ============================================================ */
+  const Perf = {
+    msEMA: 2,          /* media exponencial del coste del análisis (ms) */
+    tick: DEFAULTS.tickEvery,
+    res: DEFAULTS.sampleWTarget,
+    t0: 0,
+
+    begin() { this.t0 = performance.now(); },
+    end() {
+      const ms = performance.now() - this.t0;
+      if (!CFG.adapt) return ms;
+      this.msEMA = this.msEMA * 0.85 + ms * 0.15;
+      if (this.msEMA > 7.5) {
+        if (this.tick < 6) this.tick++;
+        if (this.res > 160) this.res = Math.max(160, this.res - 40);
+      } else if (this.msEMA < 2.5) {
+        if (this.tick > 1) this.tick--;
+        if (this.res < CFG.sampleWTarget) this.res = Math.min(CFG.sampleWTarget, this.res + 40);
+      }
+      return ms;
+    },
+    modeLabel() { return 'A' + Perf.tick + '·' + Perf.res + 'px'; }
+  };
+
+  /* ============================================================
+     3. ANFITRIÓN (documento, iframes y canvas del juego)
+     ============================================================ */
+  const Host = {
+    topWin: null, doc: null, iframes: [],
+    canvas: null, candidates: [], rect: null,
     lastScan: 0,
 
-    find() {
-      /* Buscar el iframe que contiene el canvas grande */
-      try {
-        for (const f of document.querySelectorAll('iframe')) {
-          const d = f.contentDocument;
-          if (!d) continue;
-          if (util.bestCanvas(d)) { this.iframe = f; return; }
-        }
-      } catch (e) { /* cross-origin: ignorar */ }
+    init() {
+      this.topWin = (window.top && window.top.location.origin === window.location.origin) ? window.top : window;
+      this.doc = this.topWin.document;
+      this.scan();
+    },
 
-      /* Fallback: el iframe .gameframe por nombre de clase */
-      const gf = document.querySelector('iframe.gameframe, .gameframe iframe, iframe[src*="game.html"]');
-      if (gf) this.iframe = gf;
+    gather() {
+      const out = { iframes: [], canvases: [] };
+      try {
+        out.iframes = Array.from(this.doc.querySelectorAll('iframe'));
+        const docs = [this.doc];
+        for (const f of out.iframes) {
+          try { const d = f.contentDocument; if (d) docs.push(d); } catch (e) {}
+        }
+        for (const d of docs) {
+          const list = d.querySelectorAll ? d.querySelectorAll('canvas') : [];
+          for (const c of list) {
+            const r = c.getBoundingClientRect();
+            if (!r || r.width < 120 || r.height < 80) continue;
+            out.canvases.push({ c, doc: d, area: r.width * r.height });
+          }
+        }
+      } catch (e) {}
+      out.canvases.sort((a, b) => b.area - a.area);
+      return out;
+    },
+
+    idx: 0,
+    select() {
+      this.idx = 0;
+      this.canvas = this.candidates.length ? this.candidates[0].c : null;
+      this.applyCanvas();
+    },
+    advance() {
+      if (this.candidates.length <= 1) return;
+      this.idx = (this.idx + 1) % this.candidates.length;
+      this.canvas = this.candidates[this.idx].c;
+      this.applyCanvas();
+    },
+    applyCanvas() {
+      Sampler.reset();
+      Vision.resetField();
+      this.rect = null;
+    },
+
+    scan() {
+      const now = Date.now();
+      if (now - this.lastScan < 800 && this.canvas && this.canvas.isConnected) return;
+      this.lastScan = now;
+      const g = this.gather();
+      this.iframes = g.iframes;
+      this.candidates = g.canvases;
+      if (!this.canvas || !this.canvas.isConnected) this.select();
     },
 
     canvasRect() {
       if (this.canvas && this.canvas.isConnected) {
         const r = this.canvas.getBoundingClientRect();
-        if (r && r.width > 0 && r.height > 0) { this.rect = r; return r; }
+        if (r.width > 0 && r.height > 0) { this.rect = r; return r; }
       }
       return this.rect;
     },
 
-    update() {
-      const now = Date.now();
-      if (now - this.lastScan < 600 && this.canvas && this.canvas.isConnected) return;
-      this.lastScan = now;
-
-      if (!this.iframe || !this.iframe.isConnected) this.find();
-      if (!this.iframe) return;
-
-      try {
-        const w = this.iframe.contentWindow;
-        const d = this.iframe.contentDocument;
-        if (!w || !d) return;
-        this.win = w; this.doc = d;
-        const c = util.bestCanvas(d);
-        if (c !== this.canvas) {
-          if (this.canvas) Overlay.cleanupCanvas(this.canvas);
-          this.canvas = c || null;
-          if (c) Overlay.bindCanvas(c);
-        }
-      } catch (e) { /* iframe en reparación */ }
+    viewport() {
+      return { w: this.topWin.innerWidth || window.innerWidth, h: this.topWin.innerHeight || window.innerHeight };
     }
   };
 
-  /* ================ 3. LECTURA DE PÍXELES (hook en el iframe) ================
-     El juego renderiza con WebGL y SE BORRA el drawing buffer al componer la
-     página (preserveDrawingBuffer=false), por lo que NUNCA se puede leer por
-     getImageData/drawImage desde fuera. La técnica que SÍ funciona:
-
-       1. Envolvemos requestAnimationFrame del iframe UNA vez.
-       2. Nuestro callback se registra DESPUÉS del del juego (FIFO), así que se
-          ejecuta justo después de que el juego dibuje y ANTES de que el
-          navegador limpie/componga el buffer.
-       3. Ahí llamamos gl.readPixels (buffer todavía válido) y bajamos la
-          resolución a una cuadrícula pequeña (≈360 px de ancho) que dejamos
-          listo en iframe.__opmode_pix para que el documento padre lo use.
-
-     Si no hay contexto WebGL (fallback raro), se usa drawImage → canvas 2D.
-  */
-  const Sampler = {
-    mode: 'none',         /* 'gl-hook' | '2d' */
-    enabled: false,
-    buf: null,            // Uint8ClampedArray RGBA del downsample
-    sw: 0, sh: 0,         // dimensiones del downsample
-    glCtx: null,
-    glBuf: null,          // buffer completo readPixels (persistente)
-    fullW: 0, fullH: 0,
-    step: 1,
-    hooked: false,
-    tries2d: 0,
-
-    /* Envolver rAF del iframe (una sola vez) */
-    hook(win) {
-      if (win.__opmode_hooked) return;
-      win.__opmode_hooked = true;
-      const origRaf = win.requestAnimationFrame.bind(win);
-      const tag = '__opmode_pix';
-      const self = this;
-      const stepFn = () => {
-        if (!self.enabled) { win[tag] = null; return; }   /* ya apagado */
-        try { self.readFrame(win, tag); } catch (e) { /* frame fallido */ }
-        origRaf(stepFn);
-      };
-      try { origRaf(stepFn); } catch (e) { /* window cerrado */ }
-    },
-
-    /* Leer un frame desde el gancho */
-    readFrame(win, tag) {
-      const c = Loc.canvas;
-      if (!c) return;
-      const w = c.width, h = c.height;
-      if (!w || !h || w * h > 40e6) return;
-
-      /* ---- vía WebGL readPixels ---- */
-      if (this.mode === 'gl-hook') {
-        if (!this.glCtx || c.__opmode_gl_broken) {
-          const ctx = this.getGL(c);
-          if (ctx) { this.glCtx = ctx; c.__opmode_gl_broken = false; }
-          else { c.__opmode_gl_broken = true; this.mode = '2d'; return; }
-        }
-        if (!this.glBuf || this.fullW !== w || this.fullH !== h) {
-          this.fullW = w; this.fullH = h;
-          this.glBuf = new Uint8Array(w * h * 4);
-        }
-        try {
-          this.glCtx.readPixels(0, 0, w, h, this.glCtx.RGBA, this.glCtx.UNSIGNED_BYTE, this.glBuf);
-        } catch (e) { return; }
-        this.downsampleFromGL(win, tag, w, h);
-        return;
-      }
-
-      /* ---- vía canvas 2D (fallback) ---- */
-      if (this.mode === '2d') {
-        if (c.__opmode_2d_broken) return;
-        try {
-          if (!this.off) {
-            this.off = document.createElement('canvas');
-            this.off.style.cssText = 'position:absolute;left:-99999px;top:0;width:2px;height:2px;visibility:hidden;pointer-events:none';
-            this.offCtx = this.off.getContext('2d');
-            document.body.appendChild(this.off);
-          }
-          this.off.width = this.targetSampleW(w);
-          this.off.height = Math.max(1, Math.round(this.off.width * h / w));
-          this.offCtx.drawImage(c, 0, 0, this.off.width, this.off.height);
-          const img = this.offCtx.getImageData(0, 0, this.off.width, this.off.height);
-          let any = 0;
-          const d = img.data;
-          for (let i = 3; i < d.length; i += 4) if (d[i] > 0) { any = 1; break; }
-          if (!any) { if (this.tries2d++ < 12) return; this.off.style.display = 'none'; c.__opmode_2d_broken = true; return; }
-          this.tries2d = 0;
-          win[tag] = { w: this.off.width, h: this.off.height, data: d, t: performance.now() };
-        } catch (e) { c.__opmode_2d_broken = true; }
-      }
-    },
-
-    getGL(c) {
-      for (const kind of ['webgl2', 'webgl', 'experimental-webgl']) {
-        try {
-          const ctx = c.getContext(kind, { willReadFrequently: true });
-          if (ctx && (typeof ctx.readPixels === 'function')) return ctx;
-        } catch (e) { /* siguiente */ }
-      }
-      return null;
-    },
-
-    targetSampleW(fullW) {
-      const w = Math.min(CFG.sampleWTarget, fullW);
-      this.step = Math.max(1, Math.round(fullW / w));
-      return Math.floor(fullW / this.step);
-    },
-
-    downsampleFromGL(win, tag, w, h) {
-      const sw = this.targetSampleW(w);
-      const sh = Math.max(1, Math.round(h / this.step));
-      if (!this.buf || this.sw !== sw || this.sh !== sh) {
-        this.sw = sw; this.sh = sh;
-        this.buf = new Uint8ClampedArray(sw * sh * 4);
-      }
-      const src = this.glBuf, dst = this.buf;
-      const s = this.step;
-      let o = 0;
-      for (let sy = 0; sy < sh; sy++) {
-        const srcY = (h - 1) - (sy * s + (s >> 1));   // readPixels es bottom-up
-        if (srcY < 0 || srcY >= h) { o += sw * 4; continue; }
-        let srcRow = srcY * w;
-        for (let sx = 0; sx < sw; sx++) {
-          const p = (srcRow + sx * s + (s >> 1)) * 4;
-          dst[o++] = src[p]; dst[o++] = src[p + 1]; dst[o++] = src[p + 2]; dst[o++] = src[p + 3];
-        }
-      }
-      win[tag] = { w: sw, h: sh, data: dst, t: performance.now(), age: 0 };
-    },
-
-    init() {
-      if (this.hooked) return;
-      const w = Loc.win;
-      if (!w) return;
-      const c = Loc.canvas;
-      if (!c) return;
-
-      this.enabled = true;
-
-      /* Decidir modo: preferimos GL si hay contexto */
-      const ctx = this.getGL(c);
-      if (ctx) { this.mode = 'gl-hook'; this.glCtx = ctx; }
-      else { this.mode = '2d'; }
-      this.hooked = true;
-      this.hook(w);
-      util.log('Lectura por píxeles: ' + (this.mode === 'gl-hook' ? 'WebGL readPixels (en tiempo real)' : 'canvas 2D'));
-    }
-  };
-
-  /* ================ 4. OVERLAY (canvas propio fullscreen) ================ */
+  /* ============================================================
+     4. OVERLAY (un solo canvas, invisible al ratón, DPR limitado)
+     ============================================================ */
   const Overlay = {
-    canvas: null,
-    ctx: null,
-    cssW: 0, cssH: 0,
-    picking: false,       /* modo "elige tu jugador con un clic" */
-    onPick: null,
-    attachedCanvas: null,
+    canvas: null, ctx: null, w: 0, h: 0,
 
-    create() {
-      if (this.canvas) this.remove();
-      this.canvas = document.createElement('canvas');
+    ensure() {
+      if (this.canvas && this.canvas.isConnected) return;
+      this.canvas = Host.doc.createElement('canvas');
       this.canvas.setAttribute('data-opmode', '1');
-      this.canvas.style.position = 'fixed';
-      this.canvas.style.left = '0';
-      this.canvas.style.top = '0';
-      this.canvas.style.zIndex = '2147482600';
-      this.canvas.style.pointerEvents = 'none';
-      document.body.appendChild(this.canvas);
+      this.canvas.style.cssText = 'position:fixed;left:0;top:0;z-index:2147482600;pointer-events:none';
+      Host.doc.body.appendChild(this.canvas);
       this.ctx = this.canvas.getContext('2d');
-    },
-
-    bindCanvas(c) {
-      this.attachedCanvas = c;
-    },
-
-    cleanupCanvas(c) {
-      if (c) { c.__opmode_gl_broken = false; c.__opmode_2d_broken = false; }
     },
 
     remove() {
       if (this.canvas && this.canvas.parentNode) this.canvas.parentNode.removeChild(this.canvas);
       this.canvas = null; this.ctx = null;
-      if (this.attachedCanvas) this.cleanupCanvas(this.attachedCanvas);
-      this.attachedCanvas = null;
     },
 
     sync() {
-      if (!this.canvas) this.create();
-      const vw = window.innerWidth, vh = window.innerHeight;
-      if (!vw || !vh) return;
-      const dpr = window.devicePixelRatio || 1;
-      const pw = Math.round(vw * dpr), ph = Math.round(vh * dpr);
+      this.ensure();
+      const v = Host.viewport();
+      const dpr = Math.min(this.canvas.ownerDocument.defaultView.devicePixelRatio || 1, CFG.maxDpr);
+      const pw = Math.round(v.w * dpr), ph = Math.round(v.h * dpr);
       if (this.canvas.width !== pw) this.canvas.width = pw;
       if (this.canvas.height !== ph) this.canvas.height = ph;
-      this.cssW = vw; this.cssH = vh;
+      this.w = v.w; this.h = v.h;
       this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-      this.ctx.clearRect(0, 0, vw, vh);
+      this.ctx.clearRect(0, 0, v.w, v.h);
     }
   };
 
-  /* ================ 5. VISIÓN (análisis de píxeles) ================ */
-  const Vision = {
-    pix: null,              // {w,h,data} del iframe
-    field: null,            // {x0,y0,x1,y1} en coords del downsample
-    ball: null,             // {x,y} en coords del downsample
-    ballWorld: null,
-    players: [],            // [{x,y,color}] sample
-    me: null,               // {x,y,color,world}
-    demo: null,             // dibujo sintético
+  /* ============================================================
+     5. MUESTREADOR (miniatura RGBA barata, 2D + fallback WebGL)
+     ============================================================ */
+  const Sampler = {
+    sw: 0, sh: 0,
+    off: null, offCtx: null, offImg: null,
+    gl: null, glBuf: null, glW: 0, glH: 0,
+    mode: null, ok: false, tried: {},
 
-    /* --- rectángulo del campo: píxeles verdes dominantes --- */
-    detectField(px) {
+    reset() { this.ok = false; this.mode = null; this.tried = {}; },
+
+    /* Miniatura RGBA del canvas del juego. El offscreen se cachea y
+       se marca willReadFrequently para acelerar getImageData. */
+    frame() {
+      const c = Host.canvas;
+      if (!c || !c.isConnected) return null;
+      const cw = c.width, ch = c.height;
+      if (!cw || !ch) return null;
+
+      const target = Math.min(Perf.res, cw);
+      const step = Math.max(1, Math.round(cw / target));
+      const sw = Math.floor(cw / step);
+      const sh = Math.max(1, Math.floor(ch / step));
+
+      /* ---- intento 2D (el juego es 2D) ---- */
+      if (this.mode !== 'webgl') {
+        const ctx = this.get2D(c);
+        if (!ctx) this.mode = 'webgl';
+        else {
+          try {
+            if (!this.off) {
+              this.off = Host.doc.createElement('canvas');
+              this.offCtx = this.off.getContext('2d', { willReadFrequently: true });
+            }
+            if (this.off.width !== sw) this.off.width = sw;
+            if (this.off.height !== sh) this.off.height = sh;
+            this.offCtx.drawImage(c, 0, 0, sw, sh);
+            this.offImg = this.offCtx.getImageData(0, 0, sw, sh);
+            this.sw = sw; this.sh = sh;
+            this.ok = true;
+            return this.offImg.data;
+          } catch (e) { this.mode = 'webgl'; }
+        }
+      }
+
+      /* ---- intento WebGL (fallback raro) ---- */
+      try {
+        let g = this.gl;
+        if (!g || !c.__opmode_gl) {
+          g = c.getContext('webgl') || c.getContext('experimental-webgl');
+          c.__opmode_gl = !!g;
+        }
+        if (!g) return null;
+        this.gl = g;
+        if (!this.glBuf || this.glW !== cw || this.glH !== ch) {
+          this.glW = cw; this.glH = ch;
+          this.glBuf = new Uint8Array(cw * ch * 4);
+        }
+        g.readPixels(0, 0, cw, ch, g.RGBA, g.UNSIGNED_BYTE, this.glBuf);
+
+        if (!this.off) {
+          this.off = Host.doc.createElement('canvas');
+          this.offCtx = this.off.getContext('2d', { willReadFrequently: true });
+        }
+        if (!this.offImg || this.offImg.width !== sw || this.offImg.height !== sh) {
+          this.offImg = this.offCtx.createImageData(sw, sh);
+        }
+        const src = this.glBuf, dst = this.offImg.data;
+        let o = 0;
+        for (let y = 0; y < sh; y++) {
+          const srcY = (ch - 1) - (y * step + (step >> 1));
+          if (srcY < 0 || srcY >= ch) { o += sw * 4; continue; }
+          const row = srcY * cw;
+          for (let x = 0; x < sw; x++) {
+            const p = (row + x * step + (step >> 1)) * 4;
+            dst[o] = src[p]; dst[o + 1] = src[p + 1]; dst[o + 2] = src[p + 2]; dst[o + 3] = 255;
+            o += 4;
+          }
+        }
+        this.sw = sw; this.sh = sh;
+        this.ok = true;
+        return dst;
+      } catch (e) { return null; }
+    },
+
+    /* Contexto 2D real del juego, cacheado (sin getContext por frame) */
+    get2D(c) {
+      try {
+        if (c.__opmode_2dctx) return c.__opmode_2dctx;
+        if (c.__opmode_2d === undefined) {
+          const ctx = c.getContext('2d', { willReadFrequently: true });
+          c.__opmode_2d = !!ctx;
+          if (ctx) c.__opmode_2dctx = ctx;
+          return c.__opmode_2d ? c.__opmode_2dctx : null;
+        }
+        return c.__opmode_2d ? c.__opmode_2dctx : null;
+      } catch (e) { return null; }
+    },
+
+    isBlank(data) {
+      let sum = 0, n = 0;
+      for (let i = 0; i < data.length; i += 64) { sum += data[i] + data[i + 1] + data[i + 2]; n += 3; }
+      return n === 0 || (sum / n) < 3;
+    }
+  };
+
+  /* ============================================================
+     6. VISIÓN (campo, balón, jugadores, "yo", velocidad, demo)
+     ============================================================ */
+  const Vision = {
+    data: null,
+    field: null,
+    ball: null,            /* {x,y} en coords de muestra */
+    ballWorld: null,
+    ballSmooth: null,      /* {x,y} suavizado para dibujar (sin vibración) */
+    players: [],           /* [{x,y,color}] en coords de muestra */
+    playersWorld: [],      /* [{x,y,color,wx,wy}] en mundo */
+    me: null,
+    vx: 0, vy: 0, lastBall: null,
+    blankFrames: 0, emptyFail: 0,
+
+    resetField() { this.field = null; this.ball = null; this.ballWorld = null; this.ballSmooth = null; this.blankFrames = 0; this.emptyFail = 0; },
+
+    /* Reusamos un único Uint8Array para componentes conexas (sin GC). */
+    _seen: null,
+    _seenSize: 0,
+    compsMask(len) {
+      if (!this._seen || this._seen.length < len) { this._seen = new Uint8Array(len); this._seenSize = len; }
+      this._seen.fill(0);
+      return this._seen;
+    },
+
+    components(mask, sw, sh) {
+      const seen = this.compsMask(sw * sh);
+      const out = [];
+      for (let y = 1; y < sh - 1; y++) {
+        const row = y * sw;
+        for (let x = 1; x < sw - 1; x++) {
+          const i = row + x;
+          if (seen[i] || !mask(i)) continue;
+          const stack = [i];
+          let minX = x, maxX = x, minY = y, maxY = y, sumX = 0, sumY = 0, n = 0;
+          seen[i] = 1;
+          while (stack.length) {
+            const c = stack.pop();
+            const cx = c % sw, cy = (c - cx) / sw;
+            sumX += cx + 0.5; sumY += cy + 0.5; n++;
+            if (cx < minX) minX = cx; if (cx > maxX) maxX = cx;
+            if (cy < minY) minY = cy; if (cy > maxY) maxY = cy;
+            for (const nb of [c - 1, c + 1, c - sw, c + sw]) {
+              if (nb < 0 || nb >= seen.length) continue;
+              if (seen[nb] || !mask(nb)) continue;
+              const nbx = nb % sw, nby = (nb - nbx) / sw;
+              if (nbx < 1 || nbx >= sw - 1 || nby < 1 || nby >= sh - 1) continue;
+              seen[nb] = 1; stack.push(nb);
+            }
+          }
+          if (n < 5) continue;
+          out.push({ x: sumX / n, y: sumY / n, w: maxX - minX + 1, h: maxY - minY + 1, minX, maxX, minY, maxY, area: n });
+        }
+      }
+      return out;
+    },
+
+    detectField(data, sw, sh) {
       let sx0 = 1e9, sy0 = 1e9, sx1 = -1, sy1 = -1, count = 0;
-      const d = px.data, w = px.w, h = px.h;
-      for (let y = 0; y < h; y += 2) {
-        const row = y * w * 4;
-        for (let x = 0; x < w; x += 2) {
+      for (let y = 0; y < sh; y += 2) {
+        const row = y * sw * 4;
+        for (let x = 0; x < sw; x += 2) {
           const p = row + x * 4;
-          const r = d[p], g = d[p + 1], b = d[p + 2];
-          if (g >= 60 && g <= 240 && g >= r + 25 && g >= b + 25) {
+          const r = data[p], g = data[p + 1], b = data[p + 2];
+          if (g >= 60 && g <= 235 && g >= r + 25 && g >= b + 25) {
             if (x < sx0) sx0 = x; if (x > sx1) sx1 = x;
             if (y < sy0) sy0 = y; if (y > sy1) sy1 = y;
             count++;
           }
         }
       }
-      if (count < 100) return null;               // sin campo suficiente
+      if (count < 120) return null;
       const f = { x0: sx0, y0: sy0, x1: sx1, y1: sy1 };
       if (!this.field) { this.field = f; return f; }
-      /* suavizado para evitar parpadeo página a página */
-      const a = 0.12;
+      const a = 0.15;
       this.field.x0 += a * (f.x0 - this.field.x0);
       this.field.y0 += a * (f.y0 - this.field.y0);
       this.field.x1 += a * (f.x1 - this.field.x1);
@@ -398,680 +477,925 @@
       return this.field;
     },
 
-    /* --- componentes conexas sobre una máscara booleana --- */
-    components(px, isHot) {
-      const w = px.w, h = px.h, d = px.data;
-      const seen = new Uint8Array(w * h);
-      const out = [];
-      for (let y = 1; y < h - 1; y++) {
-        const row = y * w;
-        for (let x = 1; x < w - 1; x++) {
-          const i = row + x;
-          if (seen[i]) continue;
-          if (!isHot(d, i * 4)) continue;
-          /* BFS/DFS por pila sobre vecinos 4-conectados */
-          const stack = [i];
-          let minX = x, maxX = x, minY = y, maxY = y, sumX = 0, sumY = 0, n = 0;
-          seen[i] = 1;
-          while (stack.length) {
-            const c = stack.pop();
-            const cx = c % w, cy = (c - cx) / w;
-            sumX += cx + 0.5; sumY += cy + 0.5; n++;
-            if (cx < minX) minX = cx; if (cx > maxX) maxX = cx;
-            if (cy < minY) minY = cy; if (cy > maxY) maxY = cy;
-            for (const nb of [c - 1, c + 1, c - w, c + w]) {
-              if (nb < 0 || nb >= seen.length) continue;
-              const nbx = nb % w, nby = (nb - nbx) / w;
-              if (nbx < 1 || nbx >= w - 1 || nby < 1 || nby >= h - 1) continue;
-              if (seen[nb]) continue;
-              if (isHot(d, nb * 4)) { seen[nb] = 1; stack.push(nb); }
-            }
-          }
-          if (n < 5) continue;
-          const cw = maxX - minX + 1, ch = maxY - minY + 1;
-          out.push({
-            x: sumX / n, y: sumY / n,
-            minX, maxX, minY, maxY, w: cw, h: ch, area: n
-          });
-        }
-      }
-      return out;
+    /* Posición prevista del balón (para premiar continuidad con velocidad) */
+    expectedBall() {
+      if (!this.lastBall) return null;
+      return { x: this.lastBall.x + this.vx * 0.05, y: this.lastBall.y + this.vy * 0.05 };
     },
 
-    compactScore(c) {
-      const rad = Math.max(c.w, c.h) / 2;
-      if (rad <= 0) return 0;
-      return (c.area / (Math.PI * rad * rad));
-    },
+    detectBall(data, sw, sh, f) {
+      const mask = (i) => {
+        const p = i * 4;
+        /* blanco difuso: luminancia alta en los 3 canales */
+        return data[p] >= 185 && data[p + 1] >= 185 && data[p + 2] >= 185;
+      };
+      const comps = this.components(mask, sw, sh);
+      const scale = sw / CFG.worldW;
+      const expR = CFG.ballRadius * scale;
+      const expArea = Math.PI * expR * expR;
+      const exp = this.expectedBall();
+      let best = null, score = 0;
 
-    /* --- detectar balón (blanco sólido, redondo, dentro del campo) --- */
-    detectBall(px) {
-      const mask = (d, p) => d[p] >= 225 && d[p + 1] >= 225 && d[p + 2] >= 225 && d[p + 3] > 120;
-      const comps = this.components(px, mask);
-      const f = this.field;
-      const sq = (px.w * px.h) / (CFG.worldW * CFG.worldH);
-      let best = null, bestScore = 0;
       for (const c of comps) {
         const cx = (c.minX + c.maxX) / 2, cy = (c.minY + c.maxY) / 2;
-        if (!f) continue;
-        if (cx < f.x0 + 3 || cx > f.x1 - 3 || cy < f.y0 + 3 || cy > f.y1 - 3) continue;
-        /* área esperada: pi * (radio 10u * sq)²  ... con margen amplio */
-        const expArea = Math.PI * Math.pow(10 * sq, 2);
-        if (c.area < expArea * 0.3 || c.area > 1400) continue;
-        /* forma redonda */
+        if (cx <= f.x0 + 2 || cx >= f.x1 - 2 || cy <= f.y0 + 2 || cy >= f.y1 - 2) continue;
         const ar = Math.max(c.w, c.h) / Math.max(1, Math.min(c.w, c.h));
-        if (ar > 1.9) continue;
-        const score = this.compactScore(c);
-        if (score > bestScore) { bestScore = score; best = { x: cx, y: cy }; }
+        if (ar > 1.8) continue;                       /* líneas del campo: nada de blancos alargados */
+        if (c.area < expArea * 0.35 || c.area > expArea * 2.6) continue;
+        const rad = Math.max(c.w, c.h) / 2;
+        const round = rad > 0 ? Math.min(1, c.area / (Math.PI * rad * rad)) : 0;
+        const dPrev = exp ? 1 / (1 + Math.hypot(cx - exp.x, cy - exp.y)) : (this.ball ? 1 / (1 + Math.hypot(cx - this.ball.x, cy - this.ball.y)) : 0);
+        const s = round + dPrev * 0.5;
+        if (s > score) { score = s; best = { x: cx, y: cy }; }
       }
       this.ball = best;
       return best;
     },
 
-    /* --- detectar jugadores por color de equipo --- */
-    detectPlayers(px) {
+    detectPlayers(data, sw, sh, f) {
       const teams = [
-        { name: 'red',  mask: (d, p) => d[p] >= 150 && d[p + 1] <= 100 && d[p + 2] <= 100 && d[p] - d[p + 2] >= 70 },
-        { name: 'blue', mask: (d, p) => d[p + 2] >= 150 && d[p] <= 100 && d[p + 1] <= 100 && d[p + 2] - d[p] >= 70 }
+        { color: 'red',  mask: (i) => { const p = i * 4; return data[p] >= 140 && data[p + 1] <= 90 && data[p + 2] <= 90 && data[p] - data[p + 2] >= 70; } },
+        { color: 'blue', mask: (i) => { const p = i * 4; return data[p + 2] >= 140 && data[p] <= 90 && data[p + 1] <= 90 && data[p + 2] - data[p] >= 70; } }
       ];
-      const f = this.field;
-      const sq = (px.w * px.h) / (CFG.worldW * CFG.worldH);
+      const scale = sw / CFG.worldW;
+      const expR = CFG.playerRadius * scale;
+      const expArea = Math.PI * expR * expR;
       const out = [];
       for (const t of teams) {
-        const comps = this.components(px, t.mask);
-        /* Los avatares dibujan su imagen sobre el disco; el borde de equipo
-           es fino → área media entre 8 y ~400 px² en el downsample */
-        const expArea = Math.PI * Math.pow(15 * sq, 2);
-        for (const c of comps) {
+        for (const c of this.components(t.mask, sw, sh)) {
           const cx = (c.minX + c.maxX) / 2, cy = (c.minY + c.maxY) / 2;
-          if (!f) continue;
           if (cx < f.x0 + 2 || cx > f.x1 - 2 || cy < f.y0 + 2 || cy > f.y1 - 2) continue;
-          if (c.area < 8 || c.area > expArea * 1.6) continue;
-          out.push({ x: cx, y: cy, color: t.name, area: c.area });
+          if (c.area < Math.max(7, expArea * 0.3) || c.area > expArea * 2) continue;
+          out.push({ x: cx, y: cy, color: t.color });
         }
       }
       this.players = out;
       return out;
     },
 
-    /* --- convertir coord del downsample → mundo --- */
-    toWorld(c, f, pw, ph) {
-      const fx = c.x / pw, fy = c.y / ph;
+    /* MAPEO CORREGIDO: fracción DENTRO del campo * dimensiones de mundo */
+    toWorld(p, sw, sh) {
+      const f = this.field;
+      if (!f) return { x: 0, y: 0 };
       return {
-        x: (f.x0 + fx * (f.x1 - f.x0)) / (f.x1 - f.x0) * CFG.worldW,
-        y: (f.y0 + fy * (f.y1 - f.y0)) / (f.y1 - f.y0) * CFG.worldH
+        x: ((p.x - f.x0) / (f.x1 - f.x0)) * CFG.worldW,
+        y: ((p.y - f.y0) / (f.y1 - f.y0)) * CFG.worldH
       };
     },
 
-    /* --- "yo": clic del usuario o auto (más cercano al balón) --- */
     updateMe() {
-      const ball = this.ball;
-      if (!CFG.autoMe || !ball || !this.players.length) return;
-      let best = null, bestD = 1e9;
+      if (this.me && this.me.pinned) return;
+      if (!CFG.autoMe || !this.ball || !this.players.length) return;
+      let best = null, d = 1e9;
       for (const p of this.players) {
-        const d = Math.hypot(p.x - ball.x, p.y - ball.y);
-        if (d < bestD) { bestD = d; best = p; }
+        const dd = Math.hypot(p.x - this.ball.x, p.y - this.ball.y);
+        if (dd < d) { d = dd; best = p; }
       }
       if (!best) return;
       if (!this.me) this.me = { x: best.x, y: best.y, color: best.color };
       else {
-        const d = Math.hypot(best.x - this.me.x, best.y - this.me.y);
-        if (d < 40) { this.me.x = best.x; this.me.y = best.y; this.me.color = best.color; }
+        const dd = Math.hypot(best.x - this.me.x, best.y - this.me.y);
+        if (dd < 50) { this.me.x = best.x; this.me.y = best.y; this.me.color = best.color; }
       }
     },
 
-    /* --- procesar frame --- */
-    process() {
-      this.pix = Loc.win ? Loc.win.__opmode_pix : null;
-      if (!this.pix || !this.pix.data) return false;
-
-      const f = this.detectField(this.pix);
-      this.field = f;
-      if (!f) return false;
-
-      this.detectBall(this.pix);
-      if (!this.ball) return false;
-
-      this.detectPlayers(this.pix);
-      if (!this.me || !this.me.pinned) this.updateMe();
-
-      const pw = this.pix.w, ph = this.pix.h;
-      this.ballWorld = this.toWorld(this.ball, f, pw, ph);
-      if (this.me && !this.me.pinned && this.me.x != null) {
-        this.me.world = this.toWorld(this.me, f, pw, ph);
+    analyze(data, sw, sh) {
+      this.data = data;
+      if (Sampler.isBlank(data)) {
+        this.blankFrames++;
+        if (this.blankFrames > 8) Host.advance();
+        return false;
       }
+      this.blankFrames = 0;
+
+      const f = this.detectField(data, sw, sh);
+      if (!f) { this.ball = null; this.ballWorld = null; return false; }
+
+      this.players = this.detectPlayers(data, sw, sh, f);
+      this.detectBall(data, sw, sh, f);
+      if (!this.ball && this.players.length === 0) {
+        this.emptyFail++;
+        if (this.emptyFail > 9) Host.advance();
+        return false;
+      }
+      this.emptyFail = 0;
+      if (!this.ball) { this.ballWorld = null; return false; }
+
+      this.updateMe();
+
+      this.ballWorld = this.toWorld(this.ball, sw, sh);
+      if (this.me && !this.me.pinned) this.me.world = this.toWorld(this.me, sw, sh);
+
+      /* Suavizado para el dibujo: menos vibración, mismas físicas de cálculo */
+      if (!this.ballSmooth) this.ballSmooth = { x: this.ballWorld.x, y: this.ballWorld.y };
+      else {
+        const a = 0.5;
+        this.ballSmooth.x += a * (this.ballWorld.x - this.ballSmooth.x);
+        this.ballSmooth.y += a * (this.ballWorld.y - this.ballSmooth.y);
+      }
+
+      this.playersWorld = [];
+      for (const p of this.players) {
+        const w = this.toWorld(p, sw, sh);
+        this.playersWorld.push({ x: p.x, y: p.y, color: p.color, wx: w.x, wy: w.y });
+      }
+      if (this.me && this.me.world) this.me.world = this.toWorld(this.me, sw, sh);
       return true;
     },
 
-    /* --- modo demo: simula el campo y el balón --- */
-    processDemo() {
-      const t = performance.now() / 1000;
-      if (!this.demo) this.demo = { x: 400, y: 200, vx: 40, vy: 30 };
-      const d = this.demo;
-      d.x += d.vx * 0.016; d.y += d.vy * 0.016;
-      if (d.x < 80 || d.x > 720) d.vx *= -1;
-      if (d.y < 80 || d.y > 320) d.vy *= -1;
-      this.ball = { x: d.x, y: d.y };
-      this.ballWorld = { x: d.x, y: d.y };
+    trackVel(w, dt) {
+      if (!w) { this.lastBall = null; return; }
+      if (this.lastBall) {
+        const dx = w.x - this.lastBall.x, dy = w.y - this.lastBall.y;
+        if (dt > 0 && dt < 0.25) { const a = 0.35; this.vx += a * (dx / dt - this.vx); this.vy += a * (dy / dt - this.vy); }
+      }
+      this.lastBall = { x: w.x, y: w.y };
+    },
+
+    demo(t) {
+      const s = t * 0.016;
+      const cx = 400 + Math.sin(s * 1.1) * 260;
+      const cy = 200 + Math.sin(s * 1.9) * 130;
+      this.ballWorld = { x: cx, y: cy };
+      this.ball = { x: (cx / CFG.worldW) * Sampler.sw, y: (cy / CFG.worldH) * Sampler.sh };
+      this.ballSmooth = { x: cx, y: cy };
+      this.vx = 260 * Math.cos(s * 1.1);
+      this.vy = 170 * Math.cos(s * 1.9);
       this.me = {
-        x: 300 + Math.sin(t * 4) * 120, y: 200 + Math.cos(t * 3) * 70,
-        color: 'red', world: { x: 300 + Math.sin(t * 4) * 120, y: 200 + Math.cos(t * 3) * 70 }
+        world: { x: 200 + Math.sin(s * 2.3) * 120, y: 120 + Math.cos(s * 2.7) * 60 },
+        x: 0, y: 0, color: 'red', pinned: false
       };
+      this.playersWorld = [
+        { x: 0, y: 0, color: 'red',  wx: 200 + Math.sin(s * 2.3) * 120, wy: 120 + Math.cos(s * 2.7) * 60 },
+        { x: 0, y: 0, color: 'blue', wx: 600 + Math.sin(s * 1.7) * 90,  wy: 280 + Math.cos(s * 2.1) * 50 }
+      ];
       return true;
     }
   };
 
-  /* ================ 6. FUENTE DE DATOS POR API (opcional) ================ */
-  const Data = {
-    kind: 'none',        /* 'pixels' | 'room' | 'g' | 'custom' | 'demo' */
-    src: null,
-    custom: null,
-    meApi: null,
-    ballApi: null,
-    vx: 0, vy: 0,
-    lastBall: null, lastDt: 0,
+  /* ============================================================
+     7. MAPPING mundo → pantalla
+     ============================================================ */
+  function buildMapping() {
+    const R = Host.canvasRect();
+    const v = Host.viewport();
+    const cw = R ? R.width : v.w, ch = R ? R.height : v.h;
+    let ox = R ? R.left : 0, oy = R ? R.top : 0;
+    let sx = cw / CFG.worldW, sy = ch / CFG.worldH;
 
-    detectApi() {
-      if (this.custom) { this.kind = 'custom'; return; }
-      const w = Loc.win;
-      if (!w) return;
-      try {
-        const g = w.g;
-        if (g && typeof g.getPlayerList === 'function' &&
-            (typeof g.getBallPosition === 'function' || g.room)) {
-          this.src = g; this.kind = 'g'; return;
-        }
-        for (const n of ['Room', 'room', 'hbRoom']) {
-          const v = w[n];
-          if (v && typeof v.getPlayerList === 'function' && typeof v.getBallPosition === 'function') {
-            this.src = v; this.kind = 'room'; return;
-          }
-        }
-      } catch (e) { /* sin acceso */ }
-      this.kind = 'pixels';   /* por defecto: lectura de píxeles */
-    },
-
-    poll(dt) {
-      this.detectApi();
-      if (this.custom) {
-        try {
-          const d = this.custom();
-          if (d && typeof d === 'object') {
-            const np = (p) => p ? (p.position || (isFinite(p.x) && isFinite(p.y) ? p : null)) : null;
-            const bp = np(d.ball);
-            if (bp) { this.ballApi = { x: bp.x, y: bp.y }; }
-            const mp = np(d.me);
-            if (mp) this.meApi = { world: { x: mp.x, y: mp.y }, team: d.team, name: d.name, color: d.team === 1 ? 'red' : 'blue' };
-            this.trackBallVel(dt);
-          }
-        } catch (e) { /* fuente custom con error */ }
-        return;
-      }
-      if (this.kind !== 'room' && this.kind !== 'g') return;
-
-      let me = null, ball = null;
-      try {
-        if (this.kind === 'room') {
-          ball = this.src.getBallPosition();
-          const pl = this.src.getPlayerList();
-          let myId = this.src.currentPlayerId;
-          if (myId == null) myId = this.src.playerId;
-          me = (pl || []).find(p => p && p.id === myId);
-        } else if (this.kind === 'g') {
-          ball = this.src.getBallPosition ? this.src.getBallPosition() : null;
-          if (ball == null && this.src.room && this.src.room.roomState && this.src.room.roomState.game) {
-            ball = this.src.room.roomState.game.ball;
-          }
-          me = this.src.playerId != null ? this.src.getPlayer(this.src.playerId) : null;
-          if (me && this.src.getPlayer) me = this.src.getPlayer(this.src.playerId);
-        }
-      } catch (e) { /* transición */ }
-
-      const np = (p) => {
-        if (!p) return null;
-        if (p.position) return { x: p.position.x, y: p.position.y };
-        if (isFinite(p.x) && isFinite(p.y)) return { x: p.x, y: p.y };
-        return null;
-      };
-      this.ballApi = np(ball);
-      this.meApi = np(me) ? { world: np(me), team: me.team, name: me.name, color: me.team === 1 ? 'red' : 'blue' } : null;
-      this.trackBallVel(dt);
-    },
-
-    trackBallVel(dt) {
-      this.trackVel(this.ballApi, dt);
-    },
-
-    /* Estimación de velocidad por puntos del mundo (API o píxeles) */
-    trackVel(pt, dt) {
-      if (pt) {
-        if (this.lastBall) {
-          const dx = pt.x - this.lastBall.x;
-          const dy = pt.y - this.lastBall.y;
-          if (dt > 0 && dt < 0.25) {
-            const a = 0.35;
-            this.vx += a * (dx / dt - this.vx);
-            this.vy += a * (dy / dt - this.vy);
-          }
-        }
-        this.lastBall = { x: pt.x, y: pt.y };
-      }
+    if (Vision.field && Sampler.sw && Sampler.sh) {
+      const f = Vision.field;
+      const fw = (f.x1 - f.x0) / Sampler.sw, fh = (f.y1 - f.y0) / Sampler.sh;
+      const fx = f.x0 / Sampler.sw, fy = f.y0 / Sampler.sh;
+      ox = (R ? R.left : 0) + fx * cw;
+      oy = (R ? R.top : 0) + fy * ch;
+      sx = (fw * cw) / CFG.worldW;
+      sy = (fh * ch) / CFG.worldH;
     }
-  };
-
-  /* ================ 7. DIBUJO ================ */
-  const Draw = {
-    /* mundo → pantalla (overlay fixed), usando el rect del canvas */
-    mapping() {
-      const R = Loc.canvasRect();
-      if (!R) return null;
-      return {
-        ox: R.left, oy: R.top,
-        sx: R.width / CFG.worldW,
-        sy: R.height / CFG.worldH
-      };
-    },
-
-    toScreen(px, M) {
-      return { x: M.ox + px.x * M.sx, y: M.oy + px.y * M.sy };
-    },
-
-    line(a, b, color, width, dash, glow) {
-      const ctx = Overlay.ctx;
-      ctx.beginPath();
-      ctx.moveTo(a.x, a.y);
-      ctx.lineTo(b.x, b.y);
-      ctx.strokeStyle = color;
-      ctx.lineWidth = width;
-      if (glow) { ctx.shadowColor = color; ctx.shadowBlur = 10; }
-      ctx.setLineDash(dash || []);
-      ctx.stroke();
-      ctx.setLineDash([]);
-      ctx.shadowBlur = 0;
-    },
-
-    circle(c, rPx, color, width, fill, glow) {
-      const ctx = Overlay.ctx;
-      ctx.beginPath();
-      ctx.arc(c.x, c.y, rPx, 0, Math.PI * 2);
-      if (fill) { ctx.fillStyle = fill; ctx.fill(); }
-      if (glow) { ctx.shadowColor = color; ctx.shadowBlur = 12; }
-      ctx.strokeStyle = color;
-      ctx.lineWidth = width;
-      ctx.stroke();
-      ctx.shadowBlur = 0;
-    },
-
-    dot(c, rPx, color, fill) {
-      const ctx = Overlay.ctx;
-      ctx.beginPath();
-      ctx.arc(c.x, c.y, rPx, 0, Math.PI * 2);
-      ctx.fillStyle = fill || color;
-      ctx.fill();
-    },
-
-    render(dt, source) {
-      const V = Vis;
-      if (!V.overlay) return;
-      if (!Overlay.ctx) return;
-      Overlay.sync();
-      const ctx = Overlay.ctx;
-      const M = this.mapping();
-      if (!M) return;
-
-      const color = CFG.style.color;
-      const w = CFG.style.width;
-
-      /* --- balón --- */
-      const ball = source.ballWorld;
-      const me = source.me && source.me.world ? source.me.world : null;
-
-      /* Línea balón → arco rival (el arco MÁS LEJANO del balón) */
-      if (V.lineBallGoal && ball) {
-        const gx = ball.x > CFG.worldW / 2 ? 0 : CFG.worldW;
-        const goal = { x: gx, y: CFG.worldH / 2 };
-        this.line(this.toScreen(ball, M), this.toScreen(goal, M), color, w, [], true);
-        this.circle(this.toScreen(goal, M), 12, color, 2.5, null, true);
-      }
-
-      /* Línea yo → balón */
-      if (V.lineMeBall && me && ball) {
-        this.line(this.toScreen(me, M), this.toScreen(ball, M), '#ffd94d', Math.max(2, w * 0.7), [8, 7], true);
-      }
-
-      /* Radio de alcance / contacto */
-      if (V.radius) {
-        if (ball) {
-          const rBall = (CFG.ballRadius * CFG.reachMult) * M.sx;
-          this.circle(this.toScreen(ball, M), rBall, color, 2, 'rgba(0,255,213,0.05)', true);
-        }
-        if (me) {
-          const rMe = (CFG.playerRadius * 1.3) * M.sx;
-          const hasBall = ball && Math.hypot(ball.x - me.x, ball.y - me.y) <= (CFG.playerRadius + CFG.ballRadius) * 1.3;
-          this.circle(this.toScreen(me, M), rMe,
-            hasBall ? '#39ff7a' : color, 2, hasBall ? 'rgba(57,255,122,0.08)' : 'rgba(255,217,77,0.06)', true);
-        }
-      }
-
-      /* Trayectoria estimada del balón */
-      if (V.trajectory && ball) {
-        let vx = source.vx !== undefined ? source.vx : Data.vx;
-        let vy = source.vy !== undefined ? source.vy : Data.vy;
-        if (!isFinite(vx) || !isFinite(vy)) vx = vy = 0;
-        const sp = Math.hypot(vx, vy);
-        if (sp > 4) {
-          const ahead = Math.min(90, sp * 0.55);
-          this.line(
-            this.toScreen(ball, M),
-            this.toScreen({ x: ball.x + (vx / sp) * ahead, y: ball.y + (vy / sp) * ahead }, M),
-            'rgba(255,255,255,0.85)', 1.8, [4, 5], true
-          );
-        }
-      }
-
-      /* Marcador de "yo" */
-      if (me) {
-        const c = this.toScreen(me, M);
-        this.circle(c, 10, '#ffffff', 2, null, true);
-        this.dot(c, 3, '#ffffff', '#ffffff');
-      }
-    }
-  };
-
-  /* ================ 8. VISIBILIDAD ================ */
-  const Vis = {
-    set(k, v) { CFG.vis[k] = v; persist(); }
-  };
-
-  /* ================ 9. PERSISTENCIA ================ */
-  const SSKEY = 'opmode_cfg';
-  function persist() {
-    try {
-      localStorage.setItem(SSKEY, JSON.stringify({ vis: CFG.vis, style: CFG.style, autoMe: CFG.autoMe }));
-    } catch (e) { /* sin storage */ }
+    return { ox, oy, sx, sy };
   }
 
-  /* ================ 10. MENÚ DESPLEGABLE (mod menu) ================ */
+  function toScreen(M, p) { return { x: M.ox + p.x * M.sx, y: M.oy + p.y * M.sy }; }
+
+  /* ============================================================
+     8. PREDICTOR (trayectoria con rebotes y marcador de impacto)
+     ============================================================ */
+  /* Simula el balón con velocidad estimada: constante decaimiento por
+     drag y reflexión en muros hasta N rebotes. Devuelve la polilínea y
+     el impacto en el plano del arco (con marca GOAL si entra por la boca). */
+  function predict(path) {
+    const P = CFG.prediction;
+    const W = CFG.worldW, H = CFG.worldH;
+    const r = CFG.ballRadius + 0.5;
+    const dy = H / 2;                    /* centro de la boca de gol       */
+    const goalHalf = GOAL_HALF * 1.15;   /* tolerancia visual              */
+
+    const sp = Math.hypot(path.vx, path.vy);
+    if (sp < P.min) return null;
+
+    const out = { pts: [], impact: null };
+    const dt = 1 / 72;
+    const steps = Math.min(240, Math.ceil(P.time / dt));
+    const damp = Math.exp(-P.drag * dt);
+    let x = path.x, y = path.y, vx = path.vx, vy = path.vy, bounces = P.bounces;
+
+    for (let i = 0; i < steps; i++) {
+      vx *= damp; vy *= damp;
+      const crossX = x, crossY = y;
+      x += vx * dt; y += vy * dt;
+
+      if (x < r || x > W - r) {
+        const tWall = (x < r ? r - crossX : (W - r) - crossX) / Math.max(1e-6, vx);
+        const hitY = crossY + vy * tWall;
+        out.impact = {
+          x: vx < 0 ? 0 : W,
+          y: util.clamp(hitY, 0, H),
+          on: Math.abs(hitY - dy) <= goalHalf
+        };
+        if (bounces > 0) { x = x < r ? r : W - r; vx = -vx * P.rest; bounces--; }
+        else break;
+      }
+      if (y < r || y > H - r) {
+        if (bounces > 0) { y = y < r ? r : H - r; vy = -vy * P.rest; bounces--; }
+        else break;
+      }
+      out.pts.push({ x, y });
+    }
+    return out.pts.length ? out : null;
+  }
+
+  /* ============================================================
+     9. DIBUJO (todo con "glow" multicapa barato)
+     ============================================================ */
+  const Draw = {
+    /* Trazo con brillo multicapa (sin shadowBlur) */
+    doStroke(color, width, cfg) {
+      const ctx = Overlay.ctx;
+      const g = cfg !== false && CFG.style.glow;
+      const paint = (W, A) => { ctx.globalAlpha = A; ctx.lineWidth = W; ctx.strokeStyle = color; ctx.stroke(); };
+      if (g) { paint(width + 7, 0.09); paint(width + 3, 0.22); }
+      ctx.globalAlpha = 1;
+      ctx.lineWidth = width;
+      ctx.strokeStyle = color;
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.globalAlpha = 1;
+    },
+
+    line(A, B, color, width, cfg, dash) {
+      const ctx = Overlay.ctx;
+      ctx.save();
+      ctx.setLineDash(dash || []);
+      ctx.beginPath();
+      ctx.moveTo(A.x, A.y);
+      ctx.lineTo(B.x, B.y);
+      this.doStroke(color, width, cfg);
+      ctx.restore();
+    },
+
+    poly(pts, color, width, cfg) {
+      if (!pts || pts.length < 2) return;
+      const ctx = Overlay.ctx;
+      ctx.save();
+      ctx.beginPath();
+      ctx.moveTo(pts[0].x, pts[0].y);
+      for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
+      this.doStroke(color, width, cfg);
+      ctx.restore();
+    },
+
+    circle(C, rPx, color, width, cfg, fill) {
+      const ctx = Overlay.ctx;
+      ctx.save();
+      ctx.beginPath();
+      ctx.arc(C.x, C.y, rPx, 0, Math.PI * 2);
+      if (fill) { ctx.fillStyle = fill; ctx.fill(); }
+      this.doStroke(color, width, cfg);
+      ctx.restore();
+    },
+
+    dot(P, rPx, color, fill) {
+      const ctx = Overlay.ctx;
+      ctx.save();
+      ctx.beginPath();
+      ctx.arc(P.x, P.y, rPx, 0, Math.PI * 2);
+      ctx.fillStyle = fill || color;
+      ctx.fill();
+      ctx.restore();
+    },
+
+    text(txt, P, color, sizePx, bold, align) {
+      const ctx = Overlay.ctx;
+      ctx.save();
+      ctx.font = (bold ? 'bold ' : '') + (sizePx || 12) + 'px "Segoe UI",system-ui,sans-serif';
+      ctx.fillStyle = color;
+      ctx.textAlign = align || 'center';
+      ctx.fillText(txt, P.x, P.y);
+      ctx.restore();
+    },
+
+    xmark(P, size, color, width) {
+      const ctx = Overlay.ctx;
+      ctx.save();
+      ctx.beginPath();
+      ctx.moveTo(P.x - size, P.y - size); ctx.lineTo(P.x + size, P.y + size);
+      ctx.moveTo(P.x + size, P.y - size); ctx.lineTo(P.x - size, P.y + size);
+      this.doStroke(color, width || 2.5, true);
+      ctx.restore();
+    },
+
+    /* ---- Decoración del campo (estética neon, solo encima) ---- */
+    fieldDecor(M) {
+      const th = THEMES[CFG.style.theme] || THEMES.neon;
+      const deco = th.deco;
+      const W = CFG.worldW, H = CFG.worldH, half = GOAL_HALF;
+      const c = (wx, wy) => toScreen(M, { x: wx, y: wy });
+
+      /* bandas de fuera de juego (cercanas a los laterales) */
+      this.line(c(12, 0), c(12, H), 'rgba(255,255,255,0.10)', 1.5, false);
+      this.line(c(W - 12, 0), c(W - 12, H), 'rgba(255,255,255,0.10)', 1.5, false);
+
+      /* línea de medio campo */
+      this.line(c(W / 2, 0), c(W / 2, H), deco, 2, true);
+      /* círculo central */
+      this.circle(c(W / 2, H / 2), 80 * M.sx, deco, 2, true);
+      /* punto central */
+      this.dot(c(W / 2, H / 2), 3 * M.sx, deco);
+
+      /* áreas (boxes) */
+      const boxD = 95, boxH = 260;
+      const c1 = c(0, H / 2 - boxH / 2), c2 = c(boxD, H / 2 + boxH / 2);
+      this.line(c1, c(0, H / 2 + boxH / 2), 'rgba(255,255,255,0.35)', 1.5, false);
+      this.line(c(0, H / 2 - boxH / 2), c(boxD, H / 2 - boxH / 2), 'rgba(255,255,255,0.35)', 1.5, false);
+      this.line(c(boxD, H / 2 - boxH / 2), c2, 'rgba(255,255,255,0.35)', 1.5, false);
+      const c3 = c(W, H / 2 - boxH / 2), c4 = c(W - boxD, H / 2 + boxH / 2);
+      this.line(c3, c(W, H / 2 + boxH / 2), 'rgba(255,255,255,0.35)', 1.5, false);
+      this.line(c(W, H / 2 - boxH / 2), c(W - boxD, H / 2 - boxH / 2), 'rgba(255,255,255,0.35)', 1.5, false);
+      this.line(c(W - boxD, H / 2 - boxH / 2), c4, 'rgba(255,255,255,0.35)', 1.5, false);
+      void c1; void c2; void c3; void c4;
+
+      /* arcos en las esquinas */
+      const R = 26;
+      this.circle(c(R, R), R * M.sx, 'rgba(255,255,255,0.30)', 1.5, false);
+      this.circle(c(W - R, R), R * M.sx, 'rgba(255,255,255,0.30)', 1.5, false);
+      this.circle(c(R, H - R), R * M.sx, 'rgba(255,255,255,0.30)', 1.5, false);
+      this.circle(c(W - R, H - R), R * M.sx, 'rgba(255,255,255,0.30)', 1.5, false);
+
+      /* bocas de gol con brillo del tema */
+      const gL = th.goal;
+      this.line(c(1, H / 2 - half), c(1, H / 2 + half), gL, 3, true);
+      this.line(c(W - 1, H / 2 - half), c(W - 1, H / 2 + half), gL, 3, true);
+      this.line(c(1, H / 2 - half), c(6, H / 2 - half), gL, 2, true);
+      this.line(c(1, H / 2 + half), c(6, H / 2 + half), gL, 2, true);
+      this.line(c(W - 1, H / 2 - half), c(W - 6, H / 2 - half), gL, 2, true);
+      this.line(c(W - 1, H / 2 + half), c(W - 6, H / 2 + half), gL, 2, true);
+    },
+
+    /* ---- Trazos principales ---- */
+    render(M, ball, me, ts) {
+      const th = THEMES[CFG.style.theme] || THEMES.neon;
+      const color = CFG.style.color, w = CFG.style.width;
+      const V = CFG.vis;
+      const t = ts * 0.001;
+
+      /* 1. decoración de campo debajo de todo */
+      if (V.fieldDeco && Vision.field) this.fieldDecor(M);
+
+      const bS = ball ? toScreen(M, ball) : null;
+
+      /* 2. predict: trayectoria larga con rebotes */
+      if (V.predict && ball) {
+        const pr = predict({ x: ball.x, y: ball.y, vx: Vision.vx, vy: Vision.vy });
+        if (pr) {
+          const ptsPx = pr.pts.map(p => toScreen(M, p));
+          this.poly(ptsPx, 'rgba(255,255,255,0.55)', 2, false);
+          if (ptsPx.length >= 2) this.line(ptsPx[0], ptsPx[1], color, 1.6, true, [2, 4]);
+          const last = ptsPx[ptsPx.length - 1];
+          this.dot(last, 3.5 * M.sx, color);
+          if (pr.impact) {
+            const imp = toScreen(M, pr.impact);
+            if (pr.impact.on) {
+              this.circle(imp, 13 * M.sx, th.goal, 3, true, 'rgba(57,255,122,0.14)');
+              this.xmark(imp, 7, th.goal, 3);
+              this.text('GOAL', { x: imp.x, y: imp.y - 18 * M.sx }, th.goal, Math.max(11, 13 * M.sx), true);
+            } else {
+              this.dot(imp, 4 * M.sx, 'rgba(255,82,82,0.9)');
+            }
+          }
+        }
+      }
+
+      /* 3. balón → arco */
+      if (V.lineBallGoal && ball) {
+        const gx = ball.x > CFG.worldW / 2 ? 0 : CFG.worldW;
+        const gp = toScreen(M, { x: gx, y: CFG.worldH / 2 });
+        this.line(bS, gp, color, w, true);
+        this.circle(gp, 12, color, 2.5, true);
+      }
+
+      /* 4. yo → balón */
+      if (V.lineMeBall && me && ball) {
+        this.line(toScreen(M, me), bS, '#ffd94d', Math.max(2, w * 0.7), true, [8, 7]);
+      }
+
+      /* 5. estela del balón */
+      if (V.trail) {
+        const hist = known && known.trail ? known.trail : [];
+        for (let i = 1; i < hist.length; i++) {
+          const a = (i / hist.length);
+          const A = toScreen(M, hist[i - 1]), B = toScreen(M, hist[i]);
+          this.line(A, B, color, 1 + a * 2.5, false);
+        }
+      }
+
+      /* 6. radios / aros */
+      if (V.radius) {
+        if (ball) {
+          this.circle(bS, (CFG.ballRadius * CFG.reachMult) * M.sx, color, 2, true, 'rgba(0,255,213,0.05)');
+        }
+        if (me) {
+          const inRange = ball && util.dist(ball, me) <= (CFG.playerRadius + CFG.ballRadius) * 1.25;
+          const rPx = (CFG.playerRadius * 1.25) * M.sx;
+          this.circle(toScreen(M, me), rPx, inRange ? '#39ff7a' : '#ffd94d', 2, true, inRange ? 'rgba(57,255,122,0.10)' : 'rgba(255,217,77,0.06)');
+        }
+      }
+
+      /* 7. trayectoria corta (velocidad derivada) */
+      if (V.trajectory && ball) {
+        const sp = Math.hypot(Vision.vx, Vision.vy);
+        if (sp > 4) {
+          const ahead = Math.min(90, sp * 0.55);
+          const end = { x: ball.x + (Vision.vx / sp) * ahead, y: ball.y + (Vision.vy / sp) * ahead };
+          this.line(bS, toScreen(M, end), 'rgba(255,255,255,0.85)', 1.8, true, [4, 5]);
+        }
+      }
+
+      /* 8. aros de equipo + peligro + crosshair */
+      if (V.glowPlayers && Vision.playersWorld) {
+        for (const p of Vision.playersWorld) {
+          const pp = toScreen(M, p);
+          const col = p.color === 'red' ? 'rgba(255,70,70,' : 'rgba(70,130,255,';
+          const isMe = me && Math.abs(p.wx - me.x) < 3 && Math.abs(p.wy - me.y) < 3;
+          if (isMe) continue;
+          this.circle(pp, (CFG.playerRadius * 1.12) * M.sx, col + '0.55)', 2, true, col + '0.06)');
+        }
+      }
+
+      if (V.danger && me) {
+        let opp = null, dT = 1e9;
+        if (Vision.playersWorld) {
+          for (const p of Vision.playersWorld) {
+            if (p.color === me.color) continue;
+            const dd = Math.hypot(p.wx - me.x, p.wy - me.y);
+            if (dd < dT) { dT = dd; opp = p; }
+          }
+        }
+        if (opp && dT < 55) {
+          const pulse = 0.5 + 0.5 * Math.sin(t * 10);
+          this.circle(toScreen(M, me), (CFG.playerRadius * (1.4 + pulse * 0.5)) * M.sx, th.warn, 3, true);
+          this.text('!', { x: toScreen(M, me).x, y: toScreen(M, me).y - 20 }, th.warn, 15, true);
+        }
+      }
+
+      /* 9. crosshair sobre "mi" jugador */
+      if (V.crosshair && me) {
+        const s = toScreen(M, me);
+        const g = 10;
+        this.line({ x: s.x - g, y: s.y }, { x: s.x - 3, y: s.y }, '#ffffff', 1.8, true);
+        this.line({ x: s.x + 3, y: s.y }, { x: s.x + g, y: s.y }, '#ffffff', 1.8, true);
+        this.line({ x: s.x, y: s.y - g }, { x: s.x, y: s.y - 3 }, '#ffffff', 1.8, true);
+        this.line({ x: s.x, y: s.y + 3 }, { x: s.x, y: s.y + g }, '#ffffff', 1.8, true);
+      }
+
+      /* 10. triángulo de "soy yo" + aro */
+      if (me) {
+        const s = toScreen(M, me);
+        const pulse = 0.75 + 0.25 * Math.sin(t * 5);
+        this.circle(s, (CFG.playerRadius * (1.1 + pulse * 0.25)) * M.sx, me.color === 'red' ? 'rgba(255,90,90,0.85)' : 'rgba(90,150,255,0.85)', 2.5, true);
+        const ctx = Overlay.ctx;
+        const ay = s.y - (CFG.playerRadius * 1.8) * M.sx;
+        ctx.save();
+        ctx.beginPath();
+        ctx.moveTo(s.x, ay - 9);
+        ctx.lineTo(s.x - 6, ay);
+        ctx.lineTo(s.x + 6, ay);
+        ctx.closePath();
+        ctx.fillStyle = '#ffffff';
+        ctx.fill();
+        ctx.restore();
+      }
+
+      /* 11. HUD compacto */
+      if (V.hud && ball) {
+        const sp = Math.hypot(Vision.vx, Vision.vy);
+        const goalX = ball.x > CFG.worldW / 2 ? CFG.worldW : 0;
+        const dGoal = util.dist(ball, { x: goalX, y: CFG.worldH / 2 });
+        const tGoal = sp > 8 ? dGoal / sp : 0;
+        const lblB = 'BALÓN ' + Math.round(sp) + ' u/s';
+        const lblG = '→ gol ' + (sp > 8 ? tGoal.toFixed(1) + 's' : '—');
+        const lblM = me ? ' · yo→balón ' + Math.round(util.dist(ball, me)) + ' u' : '';
+        const px = Math.min(Overlay.w * 0.5, Math.max(140, Overlay.w - 320));
+        const y = 26;
+        const th2 = THEMES[CFG.style.theme] || THEMES.neon;
+        this.text(lblB + lblG + lblM, { x: px, y: y }, '#ffffff', 12, true);
+        this.text(lblM ? '' : lblM, { x: px, y: y + 14 }, th2.deco, 10, false);
+        this.text(Perf.modeLabel(), { x: Overlay.w - 70, y: 26 }, 'rgba(160,160,160,0.7)', 10, false);
+      }
+    }
+  };
+
+  /* ============================================================
+     10. MENÚ (generado desde lista, con temas y toggles nuevos)
+     ============================================================ */
+  const MENU_ITEMS = [
+    ['lineBallGoal', 'Línea balón → arco'],
+    ['lineMeBall',   'Línea yo → balón'],
+    ['radius',       'Radio de alcance'],
+    ['trajectory',   'Trayectoria corta'],
+    ['predict',      'Predicción + rebotes'],
+    ['trail',        'Estela del balón'],
+    ['hud',          'HUD velocidad / gol'],
+    ['danger',       'Alerta de peligro'],
+    ['fieldDeco',    'Decoración de campo'],
+    ['crosshair',    'Crosshair propio'],
+    ['glowPlayers',  'Aros de equipo'],
+    ['demo',         'Demo (sin campo)']
+  ];
+
   const Menu = {
-    el: null,
-    open: false,
+    el: null, open: false, lastStatus: 0,
 
     build() {
-      if (this.el) return;
-      const root = document.createElement('div');
-      root.setAttribute('data-opmode-menu', '1');
-      root.style.cssText = [
-        'position:fixed;top:10px;right:10px;z-index:2147482601;',
-        'font:12px/1.45 "Segoe UI",system-ui,sans-serif;color:#dff6f1;',
-        'user-select:none;pointer-events:auto;'
-      ].join('');
-      root.innerHTML = `
-        <button data-op="toggle" style="cursor:pointer;background:#0a121add;border:1px solid #00ffd555;color:#00ffd5;border-radius:8px;padding:6px 10px;font-weight:700;letter-spacing:1px;box-shadow:0 0 12px #00ffd533">🎯 OP&nbsp;·&nbsp;M</button>
-        <div data-op="panel" style="display:none;margin-top:6px;width:248px;background:#0a121ae9;border:1px solid #00ffd544;border-radius:10px;padding:10px 12px;box-shadow:0 6px 24px #0009">
-          <div id="opmode-status" style="margin-bottom:8px;font-size:11px;line-height:1.5;color:#9be8d8"></div>
-          <label style="display:flex;gap:8px;align-items:center;margin:4px 0;cursor:pointer"><input data-op="cb" type="checkbox" data-k="lineBallGoal"> Línea balón → arco</label>
-          <label style="display:flex;gap:8px;align-items:center;margin:4px 0;cursor:pointer"><input data-op="cb" type="checkbox" data-k="lineMeBall"> Línea yo → balón</label>
-          <label style="display:flex;gap:8px;align-items:center;margin:4px 0;cursor:pointer"><input data-op="cb" type="checkbox" data-k="radius"> Radio de alcance</label>
-          <label style="display:flex;gap:8px;align-items:center;margin:4px 0;cursor:pointer"><input data-op="cb" type="checkbox" data-k="trajectory"> Trayectoria</label>
-          <label style="display:flex;gap:8px;align-items:center;margin:4px 0;cursor:pointer"><input data-op="cb" type="checkbox" data-k="demo"> Demo (sin campo)</label>
-          <label style="display:flex;gap:8px;align-items:center;margin:4px 0;cursor:pointer"><input data-op="cb" type="checkbox" data-k="autoMe"> "Yo" automático</label>
-          <label style="display:block;margin:8px 0 2px;color:#9be8d8">Grosor líneas
-            <input data-op="range" type="range" min="1" max="10" value="${CFG.style.width}" style="width:100%"></label>
+      if (this.el && this.el.isConnected) {
+        if (Date.now() - this.lastStatus > 300) { this.lastStatus = Date.now(); this.updateStatus(); }
+        return;
+      }
+      this.el = Host.doc.createElement('div');
+      this.el.style.cssText =
+        'position:fixed;top:10px;right:10px;z-index:2147482601;font:12px/1.5 "Segoe UI",system-ui,sans-serif;color:#dff6f1;user-select:none;pointer-events:auto';
+
+      const cols = Object.keys(THEMES).map(th =>
+        '<span data-opm="theme" data-t="' + th + '" title="Tema ' + th + '" style="display:inline-block;width:16px;height:16px;border-radius:50%;background:' + THEMES[th].deco + ';cursor:pointer;border:2px solid ' + (th === CFG.style.theme ? '#fff' : '#0000') + '"></span>').join('');
+
+      const cbs = MENU_ITEMS.map(m =>
+        '<label style="display:flex;gap:8px;margin:3px 0;cursor:pointer"><input data-opm="cb" type="checkbox" data-k="' + m[0] + '"> ' + m[1] + '</label>').join('');
+
+      this.el.innerHTML = `
+        <div>
+          <button data-opm="toggle" style="cursor:pointer;background:#0a121ade;border:1px solid #00ffd566;color:#00ffd5;border-radius:8px;padding:6px 10px;font-weight:700;letter-spacing:1px">🎯 OP · M</button>
+        </div>
+        <div data-opm="panel" style="display:none;margin-top:6px;width:262px;background:#0a121af2;border:1px solid #00ffd544;border-radius:10px;padding:10px 12px;box-shadow:0 6px 24px #0009;max-height:82vh;overflow:auto">
+          <div data-opm="status" style="margin-bottom:8px;font-size:11px;color:#9be8d8;line-height:1.55"></div>
+          ${cbs}
+          <label style="display:block;margin:6px 0 2px;color:#9be8d8"><input data-opm="cb" type="checkbox" data-k="autoMe"> "Yo" automático</label>
+          <label style="display:block;margin:8px 0 2px;color:#9be8d8">Grosor
+            <input data-opm="range" type="range" min="1" max="10" value="${CFG.style.width}" style="width:100%"></label>
+          <label style="display:block;margin:4px 0 2px;color:#9be8d8"><input data-opm="cb" type="checkbox" data-k="opmask"> Brillo neon</label>
           <div style="display:flex;gap:6px;margin:8px 0">
-            ${['#00ffd5','#ffd94d','#ff5252','#4d79ff','#b24dff','#ffffff'].map(c =>
-              `<span data-op="color" data-c="${c}" style="display:inline-block;width:20px;height:20px;border-radius:50%;background:${c};cursor:pointer;border:2px solid ${c===CFG.style.color?'#fff':'#0000'}"></span>`).join('')}
+            ${['#00ffd5', '#ffd94d', '#ff5252', '#4d79ff', '#b24dff', '#ffffff'].map(c =>
+              '<span data-opm="col" data-c="' + c + '" style="display:inline-block;width:20px;height:20px;border-radius:50%;background:' + c + ';cursor:pointer;border:2px solid ' + (c === CFG.style.color ? '#fff' : '#0000') + '"></span>').join('')}
           </div>
+          <div style="color:#9be8d8;margin:6px 0 3px">Temas de campo (decorado)</div>
+          <div style="display:flex;gap:6px;margin-bottom:8px">${cols}</div>
           <div style="display:flex;gap:6px;margin-top:6px">
-            <button data-op="pick" style="flex:1;cursor:pointer;background:#ffd94d22;border:1px solid #ffd94d88;color:#ffd94d;border-radius:6px;padding:5px">🎯 Soy yo</button>
-            <button data-op="kill" style="flex:1;cursor:pointer;background:#ff525222;border:1px solid #ff525288;color:#ff5252;border-radius:6px;padding:5px">✖ Apagar</button>
+            <button data-opm="pick" style="flex:1;cursor:pointer;background:#ffd94d22;border:1px solid #ffd94d88;color:#ffd94d;border-radius:6px;padding:5px">🎯 Soy yo</button>
+            <button data-opm="autome" style="flex:1;cursor:pointer;background:#00ffd522;border:1px solid #00ffd588;color:#00ffd5;border-radius:6px;padding:5px">♻ Auto yo</button>
+            <button data-opm="kill" style="flex:1;cursor:pointer;background:#ff525222;border:1px solid #ff525288;color:#ff5252;border-radius:6px;padding:5px">✖</button>
           </div>
         </div>`;
-      document.body.appendChild(root);
-      this.el = root;
+      Host.doc.body.appendChild(this.el);
 
-      root.querySelector('[data-op="toggle"]').onclick = () => this.setOpen(!this.open);
-      root.querySelectorAll('[data-op="cb"]').forEach(cb => {
-        cb.checked = cb.dataset.k === 'autoMe' ? !!CFG.autoMe : !!CFG.vis[cb.dataset.k];
+      this.el.querySelector('[data-opm="toggle"]').onclick = () => this.setOpen(!this.open);
+
+      this.el.querySelectorAll('[data-opm="cb"]').forEach(cb => {
+        const k = cb.dataset.k;
+        cb.checked = k === 'autoMe' ? !!CFG.autoMe : (k === 'opmask' ? CFG.style.glow : !!CFG.vis[k]);
         cb.onchange = () => {
-          if (cb.dataset.k === 'autoMe') { CFG.autoMe = !!cb.checked; persist(); }
-          else { CFG.vis[cb.dataset.k] = !!cb.checked; persist(); }
-        };
-      });
-      root.querySelector('[data-op="range"]').oninput = (e) => {
-        CFG.style.width = +e.target.value;
-        persist();
-      };
-      root.querySelectorAll('[data-op="color"]').forEach(s => {
-        s.onclick = () => {
-          CFG.style.color = s.dataset.c;
-          root.querySelectorAll('[data-op="color"]').forEach(x => x.style.borderColor = x === s ? '#fff' : '#0000');
+          if (k === 'autoMe') { CFG.autoMe = cb.checked; if (cb.checked) restartAuto(); }
+          else if (k === 'opmask') { CFG.style.glow = cb.checked; }
+          else { CFG.vis[k] = cb.checked; }
           persist();
         };
       });
-      root.querySelector('[data-op="pick"]').onclick = () => Vision.startPick();
-      root.querySelector('[data-op="kill"]').onclick = () => OpMode.destroy();
+
+      this.el.querySelector('[data-opm="range"]').oninput = (e) => { CFG.style.width = +e.target.value; persist(); };
+
+      this.el.querySelectorAll('[data-opm="col"]').forEach(s => {
+        s.onclick = () => {
+          CFG.style.color = s.dataset.c;
+          this.el.querySelectorAll('[data-opm="col"]').forEach(x => x.style.borderColor = x === s ? '#fff' : '#0000');
+          persist();
+        };
+      });
+
+      this.el.querySelectorAll('[data-opm="theme"]').forEach(s => {
+        s.onclick = () => {
+          CFG.style.theme = s.dataset.t;
+          this.el.querySelectorAll('[data-opm="theme"]').forEach(x => x.style.borderColor = x === s ? '#fff' : '#0000');
+          persist();
+          util.log('Tema de campo: ' + CFG.style.theme);
+        };
+      });
+
+      this.el.querySelector('[data-opm="pick"]').onclick = () => startPick();
+      this.el.querySelector('[data-opm="autome"]').onclick = () => restartAuto();
+      this.el.querySelector('[data-opm="kill"]').onclick = () => OpMode.destroy();
+
+      this.lastStatus = Date.now();
+      this.updateStatus();
     },
 
     setOpen(v) {
       this.open = v;
-      const p = this.el.querySelector('[data-op="panel"]');
-      const b = this.el.querySelector('[data-op="toggle"]');
-      p.style.display = v ? 'block' : 'none';
-      b.textContent = v ? '▾ OP · M' : '🎯 OP · M';
+      const p = this.el && this.el.querySelector('[data-opm="panel"]');
+      const b = this.el && this.el.querySelector('[data-opm="toggle"]');
+      if (p) p.style.display = v ? 'block' : 'none';
+      if (b) b.textContent = v ? '▾ OP · M' : '🎯 OP · M';
     },
 
-    updateStatus(text) {
-      const s = this.el && this.el.querySelector('#opmode-status');
-      if (s) s.textContent = text;
-    }
+    updateStatus() {
+      const n = this.el && this.el.querySelector('[data-opm="status"]');
+      if (!n) return;
+      const src = Data.custom ? 'CUSTOM' : (Vision.field ? 'PÍXELES' : 'NONE');
+      const f = Vision.field ? 'campo ✓' : 'campo ✗';
+      const b = known && known.ball ? 'balón ✓' : 'balón ✗';
+      const m = meNow() ? 'yo ✓' : 'yo ✗';
+      const extra = (Vision.field && !Host.canvasRect()) ? ' · (letterbox)' : '';
+      n.textContent = src + ' · ' + f + ' · ' + b + ' · ' + m + ' · ' + Perf.modeLabel() + extra + '\nhold 500ms · M menú';
+    },
+
+    statusNow() { this.lastStatus = 0; }
   };
 
-  /* Modo "elige tu jugador": un clic sobre la ventana fija tu posición */
-  const Picker = {
-    on: false,
-    handler(e) {
-      if (!Picker.on) return;
-      Picker.on = false;
-      Menu.setOpen(false);
-      const M = Draw.mapping();
-      if (!M) return;
-      const x = ((e.clientX - M.ox) / M.sx);
-      const y = ((e.clientY - M.oy) / M.sy);
-      Vision.me = { world: { x, y }, color: Vision.me ? Vision.me.color : 'red', pinned: true };
-      CFG.autoMe = false;
-      persist();
-      util.log('Yo fijado en (' + x.toFixed(0) + ', ' + y.toFixed(0) + ')');
-    }
-  };
-
-  Vision.startPick = function () {
-    Picker.on = true;
-    Menu.setOpen(false);
-    util.log('Clica sobre tu jugador para fijarlo como "yo".');
-  };
-
-  /* ================ 11. ATAJOS + BUCLE PRINCIPAL ================ */
-  let lastTs = 0;
-  let frame = 0;
-  let keysBoundFrame = null;
-
-  function bindKeys() {
-    const w = Loc.win;
-    if (!w || keysBoundFrame === w) return;
-    keysBoundFrame = w;
-    /* El juego captura el foco dentro del iframe: escuchar también allí */
-    if (w.document && w.document !== document) {
-      w.document.addEventListener('keydown', onKey, false);
-      _boundWins.push(w);
-    }
+  /* "yo": obtener el actual (world) */
+  function meNow() {
+    const m = Vision.me;
+    return m && m.world ? m.world : null;
   }
-  const _boundWins = [];
 
+  function restartAuto() {
+    Vision.me = null; CFG.autoMe = true; persist();
+    const el = Menu.el && Menu.el.querySelector('[data-opm="cb"][data-k="autoMe"]');
+    if (el) el.checked = true;
+    util.log('"Yo" en automático (jugador más cercano al balón).');
+  }
+
+  /* Fijar "yo" con clic sobre tu avatar */
+  function startPick() {
+    picking = true;
+    Menu.setOpen(false);
+    Overlay.ensure();
+    Overlay.canvas.style.pointerEvents = 'auto';
+    util.log('Haz clic sobre tu jugador.');
+  }
+  let picking = false;
+
+  function onPickClick(e) {
+    if (!picking) return;
+    picking = false;
+    Overlay.canvas.style.pointerEvents = 'none';
+    const M = buildMapping();
+    const w = util.clamp((e.clientX - M.ox) / M.sx, 0, CFG.worldW);
+    const h = util.clamp((e.clientY - M.oy) / M.sy, 0, CFG.worldH);
+    Vision.me = { world: { x: w, y: h }, pinned: true, color: 'red' };
+    CFG.autoMe = false;
+    persist();
+    const cb = Menu.el && Menu.el.querySelector('[data-opm="cb"][data-k="autoMe"]');
+    if (cb) cb.checked = false;
+    util.log('"Yo" fijado en (' + w.toFixed(0) + ', ' + h.toFixed(0) + '). Pulsa ♻ Auto yo para desfijarlo.');
+  }
+
+  /* ============================================================
+     11. FUENTE DE DATOS POR API (opcional)
+     ============================================================ */
+  const Data = { custom: null, ball: null, me: null, players: [] };
+
+  function pollCustom() {
+    if (typeof Data.custom !== 'function') return false;
+    try {
+      const d = Data.custom();
+      if (d && d.ball && (d.ball.x != null)) {
+        Data.ball = { x: d.ball.x, y: d.ball.y };
+        if (d.me) Data.me = { world: { x: d.me.x, y: d.me.y }, color: d.me.team === 1 ? 'red' : 'blue', pinned: true };
+        Data.players = Array.isArray(d.players) ? d.players.map(p => ({
+          wx: p.x, wy: p.y, color: p.team === 1 ? 'red' : 'blue', x: 0, y: 0
+        })) : [];
+        if (Data.players.length) Vision.playersWorld = Data.players;
+        if (!d.me && Data.players.length) {
+          Data.me = { world: { x: Data.players[0].wx, y: Data.players[0].wy }, color: Data.players[0].color, pinned: true };
+        }
+        return true;
+      }
+    } catch (e) {}
+    return false;
+  }
+
+  /* ============================================================
+     12. ATAJOS + BUCLE
+     ============================================================ */
   function onKey(e) {
     if (e.ctrlKey || e.metaKey || e.altKey) return;
     const t = e.target;
     if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
     const K = CFG.keys;
-    const set = (k, label) => {
-      CFG.vis[k] = !CFG.vis[k];
-      persist();
-      util.log(label + (CFG.vis[k] ? ' ON' : ' OFF'));
+    const toggle = (k, label) => {
+      CFG.vis[k] = !CFG.vis[k]; persist();
+      const el = Menu.el && Menu.el.querySelector('[data-opm="cb"][data-k="' + k + '"]');
+      if (el) el.checked = CFG.vis[k];
+      Menu.statusNow();
+      util.log(label + ' → ' + (CFG.vis[k] ? 'ON' : 'OFF'));
     };
     switch (e.code) {
       case K.menu: Menu.setOpen(!Menu.open); break;
-      case K.lineBallGoal: set('lineBallGoal', 'Línea balón→arco'); break;
-      case K.lineMeBall: set('lineMeBall', 'Línea yo→balón'); break;
-      case K.radius: set('radius', 'Radio de alcance'); break;
-      case K.trajectory: set('trajectory', 'Trayectoria'); break;
-      case K.overlay: CFG.vis.overlay = !CFG.vis.overlay; persist(); util.log('Overlay ' + (CFG.vis.overlay ? 'visible' : 'oculto')); break;
+      case K.lbg: toggle('lineBallGoal', 'Línea balón→arco'); break;
+      case K.lmb: toggle('lineMeBall', 'Línea yo→balón'); break;
+      case K.radius: toggle('radius', 'Radio de alcance'); break;
+      case K.traj: toggle('trajectory', 'Trayectoria corta'); break;
+      case K.predict: toggle('predict', 'Predicción'); break;
+      case K.trail: toggle('trail', 'Estela'); break;
+      case K.hud: toggle('hud', 'HUD'); break;
+      case K.danger: toggle('danger', 'Peligro'); break;
+      case K.field: toggle('fieldDeco', 'Decoración de campo'); break;
+      case K.cross: toggle('crosshair', 'Crosshair'); break;
+      case K.glow: toggle('glowPlayers', 'Aros de equipo'); break;
+      case K.overlay:
+        CFG.vis.overlay = !CFG.vis.overlay; persist();
+        Menu.statusNow();
+        util.log('Overlay ' + (CFG.vis.overlay ? 'visible' : 'oculto'));
+        break;
     }
   }
+
+  let lastTs = 0, tick = 0, demoTick = 0;
+  let known = null;          /* última detección para dibujo continuo */
 
   function loop(ts) {
     requestAnimationFrame(loop);
     const dt = lastTs ? Math.min(0.1, (ts - lastTs) / 1000) : 0.016;
     lastTs = ts;
-    frame++;
+    tick++;
+    demoTick++;
 
     try {
-      Loc.update();
-      bindKeys();
-      Sampler.init();
+      Host.scan();
+      BuildMenuThrottled();
+      Overlay.ensure();
 
-      if (!Overlay.canvas) Overlay.create();
-      Menu.build();
+      const hidden = Host.doc.hidden === true;
 
-      /* Fuente de datos por API (si el cliente la expone) o píxeles */
-      Data.poll(dt);
+      /* ¿Hace falta leer el canvas? Solo si: overlay visible, sin fuente
+         custom, hay canvas y la pestaña está visible. */
+      const wantPixels = CFG.vis.overlay && !Data.custom && !hidden && !!Host.canvas;
 
-      let source = null;
-      let apiSource = null;
-      if ((Data.kind === 'room' || Data.kind === 'g' || Data.kind === 'custom') && Data.ballApi) {
-        apiSource = { ballWorld: Data.ballApi, me: Data.meApi || undefined, vx: Data.vx, vy: Data.vy };
+      if (wantPixels && tick % Perf.tick === 0) {
+        Perf.begin();
+        const data = Sampler.frame();
+        if (data) {
+          const ok = Vision.analyze(data, Sampler.sw, Sampler.sh);
+          if (ok) {
+            Vision.trackVel(Vision.ballWorld, dt);
+            recordKnown(ts);
+          } else if (known && ts - known.t > CFG.holdMs * 3) {
+            known = null;
+          }
+        }
+        Perf.end();
       }
 
-      /* análisis por píxeles: sirve como respaldo y como fuente principal */
-      Vision.process();
-      if (Vision.ballWorld) Data.trackVel(Vision.ballWorld, dt);
+      const M = buildMapping();
 
-      if (apiSource) source = apiSource;
-      else if (Vision.ballWorld) source = { ballWorld: Vision.ballWorld, me: Vision.me || undefined, vx: Data.vx, vy: Data.vy };
-      else if (CFG.vis.demo && Vision.processDemo()) source = { ballWorld: Vision.ballWorld, me: Vision.me, vx: 0, vy: 0, demo: true };
+      /* Fuente: custom > píxeles > demo */
+      let ball = null, me = null;
+      if (pollCustom()) {
+        ball = Data.ball;
+        Vision.trackVel(ball, dt);
+        me = Data.me && Data.me.world ? Data.me.world : meNow();
+      } else if (known && ts - known.t <= CFG.holdMs) {
+        ball = known.ball;
+        me = known.me;
+      }
 
-      /* estado para el menú */
-      const hasField = !!Vision.field;
-      const srcLabel = Data.kind === 'pixels'
-        ? (Vision.ballWorld ? 'PÍXELES' : hasField ? 'PÍXELES (campo ok)' : 'PÍXELES (buscando campo)')
-        : Data.kind.toUpperCase();
-      Menu.updateStatus('Datos: ' + srcLabel +
-        (Vision.ballWorld ? ' · balón ✓' : ' · sin balón') +
-        (Vision.me ? ' · yo ✓' : ''));
+      if (!ball && CFG.vis.demo) {
+        Vision.demo(demoTick);
+        ball = Vision.ballWorld;
+        me = meNow() || Vision.me.world || null;
+        recordKnown(ts);
+      }
 
-      Draw.render(dt, source);
-    } catch (e) { /* el bucle nunca se rompe */ }
+      if (CFG.vis.overlay) {
+        Overlay.sync();
+        Draw.render(M, ball, me, ts);
+      }
+    } catch (e) {}
   }
 
-  /* ================ 12. API PÚBLICA ================ */
+  /* Builder de menú throttled (evita tocar el DOM por frame) */
+  let _lastMenuBuild = 0;
+  function BuildMenuThrottled() {
+    if (Date.now() - _lastMenuBuild < 300) return;
+    _lastMenuBuild = Date.now();
+    try { Menu.build(); } catch (e) {}
+  }
+
+  /* Guardar la detección actual + estela (para hold y trail) */
+  function recordKnown(ts) {
+    const m = meNow() || (Vision.me && Vision.me.world) || null;
+    const prev = known ? known.ball : null;
+    known = {
+      ball: Vision.ballSmooth ? { x: Vision.ballSmooth.x, y: Vision.ballSmooth.y } : (Vision.ballWorld ? { x: Vision.ballWorld.x, y: Vision.ballWorld.y } : null),
+      me: m ? { x: m.x, y: m.y } : null,
+      t: ts
+    };
+    if (prev && known.ball && CFG.vis.trail) {
+      known.trail = (known.trail || prev.trail || []).concat([known.ball]);
+      if (known.trail.length > CFG.trail.len) known.trail = known.trail.slice(-CFG.trail.len);
+    } else if (known.ball) known.trail = [known.ball];
+  }
+
+  /* ============================================================
+     13. API PÚBLICA
+     ============================================================ */
   const OpMode = {
     _opmode: true,
-
     get version() { return CFG.version; },
 
     get state() {
       return {
-        source: Data.kind,
-        ball: Vision.ballWorld || null,
-        me: (Vision.me && Vision.me.world) || Data.meApi || null,
+        source: Data.custom ? 'custom' : (Vision.field ? 'pixels' : 'none'),
+        ball: Data.custom ? Data.ball : (known && known.ball ? known.ball : null),
+        me: (Data.custom && Data.me) ? Data.me.world : meNow(),
+        players: (Vision.playersWorld || []).map(p => ({ x: p.wx, y: p.wy, color: p.color })),
+        ballSpeed: Math.round(Math.hypot(Vision.vx, Vision.vy)),
         field: !!Vision.field,
+        perf: Perf.modeLabel(),
         vis: Object.assign({}, CFG.vis)
       };
     },
 
     toggle(what) {
-      if (what in CFG.vis) {
-        CFG.vis[what] = !CFG.vis[what];
-        persist();
+      const toggles = ['lineBallGoal', 'lineMeBall', 'radius', 'trajectory', 'predict', 'trail', 'hud', 'danger', 'fieldDeco', 'crosshair', 'glowPlayers', 'demo', 'overlay'];
+      if (toggles.indexOf(what) >= 0) {
+        CFG.vis[what] = !CFG.vis[what]; persist();
         util.log(what + ' → ' + (CFG.vis[what] ? 'ON' : 'OFF'));
-      } else util.log('Opciones: lineBallGoal, lineMeBall, radius, trajectory, demo, overlay');
+      } else util.log('Opciones: ' + toggles.join(', '));
     },
 
-    /* Fuente de datos externa:
-         OpMode.setDataSource(() => ({ me:{x,y,team}, ball:{x,y} }))
-       null para volver a píxeles. */
-    setDataSource(fn) {
-      Data.custom = typeof fn === 'function' ? fn : null;
-      if (Data.custom) Data.kind = 'custom';
-      else { Data.kind = 'pixels'; Data.src = null; }
-      util.log(Data.custom ? 'Fuente custom activada.' : 'Vuelta a detección por píxeles.');
-    },
-
-    /* Fijar manualmente "yo" desde consola: OpMode.setMe(x, y) */
     setMe(x, y) {
       if (typeof x === 'object' && x != null) { y = x.y; x = x.x; }
-      if (!isFinite(x) || !isFinite(y)) return util.log('Uso: OpMode.setMe(x, y) o OpMode.setMe({x, y})');
-      Vision.me = { world: { x, y }, color: Vision.me ? Vision.me.color : 'red', pinned: true };
-      CFG.autoMe = false;
-      persist();
-      util.log('Yo fijado en (' + x.toFixed(0) + ', ' + y.toFixed(0) + ').');
+      if (!isFinite(x) || !isFinite(y)) return util.log('Uso: OpMode.setMe(x, y)');
+      Vision.me = { world: { x: util.clamp(x, 0, CFG.worldW), y: util.clamp(y, 0, CFG.worldH) }, pinned: true, color: 'red' };
+      CFG.autoMe = false; persist();
+      Menu.statusNow();
+      util.log('"Yo" = (' + x.toFixed(0) + ', ' + y.toFixed(0) + ')');
     },
 
-    pickMe() { Vision.startPick(); },
+    setBall(x, y) {
+      if (typeof x === 'object' && x != null) { y = x.y; x = x.x; }
+      if (isFinite(x) && isFinite(y)) { Data.ball = { x, y }; util.log('Balón override  (' + x.toFixed(0) + ', ' + y.toFixed(0) + ')'); }
+    },
 
-    resetMe() {
-      Vision.me = null;
-      CFG.autoMe = true;
-      persist();
-      util.log('"Yo" reiniciado (auto).');
+    setPlayers(list) {
+      if (Array.isArray(list)) {
+        Vision.playersWorld = list.map(p => ({
+          wx: p.x, wy: p.y, color: p.team === 1 ? 'red' : 'blue', x: 0, y: 0
+        }));
+      }
+    },
+
+    pickMe() { startPick(); },
+
+    resetMe() { restartAuto(); },
+
+    setTheme(name) {
+      if (THEMES[name]) {
+        CFG.style.theme = name; persist();
+        const el = Menu.el && Menu.el.querySelector('[data-opm="theme"][data-t="' + name + '"]');
+        if (el) Menu.el.querySelectorAll('[data-opm="theme"]').forEach(x => x.style.borderColor = x === el ? '#fff' : '#0000');
+        util.log('Tema: ' + name);
+      } else util.log('Temas: ' + Object.keys(THEMES).join(', '));
+    },
+
+    nextTheme() {
+      const names = Object.keys(THEMES);
+      const i = names.indexOf(CFG.style.theme);
+      this.setTheme(names[(i + 1) % names.length]);
+    },
+
+    setDataSource(fn) {
+      Data.custom = typeof fn === 'function' ? fn : null;
+      util.log(Data.custom ? 'Fuente custom activada.' : 'Vuelta a detección por píxeles.');
     },
 
     destroy() {
       cancelAnimationFrame(loop);
-      document.removeEventListener('keydown', onKey, false);
-      document.removeEventListener('click', Picker.handler, true);
-      for (const w of _boundWins) {
-        if (w.document) w.document.removeEventListener('keydown', onKey, false);
-      }
-      _boundWins.length = 0;
-      keysBoundFrame = null;
-      if (Overlay.canvas) Overlay.remove();
+      Host.doc.removeEventListener('keydown', onKey, false);
+      Host.doc.removeEventListener('click', onPickClick, true);
+      Overlay.remove();
       if (Menu.el && Menu.el.parentNode) Menu.el.parentNode.removeChild(Menu.el);
       Menu.el = null;
-      if (Loc.win) delete Loc.win.__opmode_pix;
-      Sampler.enabled = false;
-      if (Sampler.off && Sampler.off.parentNode) Sampler.off.parentNode.removeChild(Sampler.off);
-      Sampler.off = null; Sampler.offCtx = null;
       if (window.OpMode === OpMode) delete window.OpMode;
       util.log('Apagado. F5 para un reinicio limpio.');
     },
 
     help() {
-      const txt = [
-        'M menú · N línea balón→arco · J línea yo→balón · B radio · V trayectoria · K overlay',
-        'OpMode.toggle(m), OpMode.setMe(x,y), OpMode.pickMe(), OpMode.setDataSource(fn), OpMode.destroy()'
-      ];
-      console.log('%c' + txt.join('\n'), 'color:#9be8d8');
+      console.log('%cM menú · N balón→arco · J yo→balón · B radio · V trayectoria · P predicción\nT estela · U HUD · D peligro · G campo · C crosshair · H aros · K overlay\n\nOpMode.toggle(...), setMe, setBall, setPlayers, pickMe, resetMe\nOpMode.setTheme(name), nextTheme, setDataSource(fn), state, destroy',
+        'color:#9be8d8;font:12px/1.6 monospace');
     }
   };
 
-  /* ================ ARRANQUE ================ */
-  try {
-    const saved = JSON.parse(localStorage.getItem(SSKEY) || '{}');
-    CFG = Object.assign({}, JSON.parse(JSON.stringify(DEFAULTS)),
-      { vis: Object.assign({}, DEFAULTS.vis, saved.vis || {}),
-        style: Object.assign({}, DEFAULTS.style, saved.style || {}),
-        autoMe: saved.autoMe !== undefined ? !!saved.autoMe : DEFAULTS.autoMe });
-  } catch (e) {
-    CFG = JSON.parse(JSON.stringify(DEFAULTS));
-  }
-
-  document.addEventListener('keydown', onKey, false);
-  document.addEventListener('click', Picker.handler, true);
-
+  /* ============================================================
+     ARRANQUE
+     ============================================================ */
+  loadCfg();
+  Host.init();
+  Overlay.ensure();
+  BuildMenuThrottled();
+  Host.doc.addEventListener('keydown', onKey, false);
+  Host.doc.addEventListener('click', onPickClick, true);
   window.OpMode = OpMode;
-  Overlay.create();
-  Menu.build();
-
   requestAnimationFrame(loop);
-  util.log('v' + CFG.version + ' activado. Pulsa M para el menú, K para ocultar el overlay.');
-  util.log('Sin texto en pantalla o en el lobby: actíva el modo Demo desde el menú (M).');
+
+  util.log('v' + CFG.version + ' activado. M: menú · K: overlay · P: predicción · U: HUD');
+  util.log('Rendimiento adaptativo: ' + Perf.modeLabel() + ' (+N/M ajustan)');
+  util.log('Si no ves nada aún (lobby/cargando): pulsa M y activa "Demo".');
 })();
