@@ -1,0 +1,11 @@
+CHICAGO BULLS APP 3.0.2
+
+Cambios:
+- Keystrokes reubicado debajo de la barra superior y reorganizado: W arriba; A/S/D; ESPACIO; X/M; flechas.
+- Mensajes de chat SCORE RED/BLUE transformados visualmente en avisos CBA de gol.
+- Avatar local más visible en la fila del jugador.
+
+Limitaciones técnicas:
+- El cliente HaxBall renderiza los jugadores y el balón dentro de un canvas. Esta versión no sustituye la textura de la ficha del jugador por la imagen elegida: hacerlo requiere interceptar el renderizado interno y puede romperse con actualizaciones de HaxBall. El avatar se mantiene como imagen local en la lista de jugadores.
+- No se aplica una sombra al canvas completo para simular el aura del balón, porque también iluminaría la cancha. El balón del juego queda sin alterar.
+- Debe probarse en una partida real de HaxBall; esta entrega no incluye una prueba de partida real desde este entorno.
