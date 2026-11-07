@@ -1,0 +1,16 @@
+{
+  "name": "chicagobulls-app",
+  "version": "3.1.0",
+  "private": true,
+  "description": "CHICAGO BULLS APP (CBA): personalización visual, ajustes y sonidos para el cliente real de HaxBall.",
+  "scripts": {
+    "start": "node start.js",
+    "test": "node tests/extension.e2e.js"
+  },
+  "devDependencies": {
+    "playwright-core": "^1.64.1"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

@@ -1,0 +1,25 @@
+CHICAGO BULLS APP 3.1.0
+
+Mecánicas portadas de HaxBall Zero 2.0.4 (solo las que existen en esa versión):
+
+- Avatar real en el jugador de la cancha mediante el comando original /avatar.
+- Aplicación automática del avatar al entrar a una sala y atajos rápidos por tecla.
+- Camiseta mediante el comando original /colors (equipo, ángulo y hasta 3 colores).
+- Marcador CBA que lee el puntaje y el tiempo reales del cliente y oculta la barra nativa.
+- Banner de gol, pop de puntaje, aviso de tiempo bajo y overtime.
+- Keystrokes compacto en una esquina, con posición, escala y opacidad configurables.
+- Ocultar chat y ocultar ping/FPS.
+- Atajos de administración: K expulsa, B bloquea, Ctrl+Shift+E inicia y Ctrl+Shift+X detiene.
+- Salir de la sala sin confirmación.
+- Historial de chat con flechas ↑/↓ y atajos de emoji (:fire:, :ball:, :sob:, etc.).
+
+Correcciones:
+- Detección de goles por chat con expresiones regulares correctas.
+- El marcador y el avatar se refrescan también cuando cambia una preferencia desde el popup.
+- Los atajos de avatar nuevos ya se pueden agregar antes de asignarles una tecla.
+
+Crédito: Desarrollado por neptunzinho.
+
+Limitaciones:
+- HaxBall dibuja jugadores y balón en un único canvas: el avatar se aplica con /avatar (no reemplaza una imagen subida) y el balón sigue sin color individual.
+- Las mecánicas dependen de los selectores y comandos del cliente oficial; si HaxBall cambia su DOM pueden requerir ajustes.

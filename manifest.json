@@ -1,0 +1,63 @@
+{
+  "manifest_version": 3,
+  "name": "CHICAGO BULLS APP (CBA)",
+  "short_name": "CBA",
+  "version": "3.1.0",
+  "description": "CHICAGO BULLS APP (CBA): personalización visual, ajustes y sonidos para el cliente real de HaxBall.",
+  "icons": {
+    "16": "img/icon16.png",
+    "32": "img/icon32.png",
+    "48": "img/icon48.png",
+    "128": "img/icon128.png"
+  },
+  "action": {
+    "default_title": "CHICAGO BULLS APP (CBA)",
+    "default_popup": "popup/popup.html",
+    "default_icon": {
+      "16": "img/icon16.png",
+      "32": "img/icon32.png",
+      "48": "img/icon48.png",
+      "128": "img/icon128.png"
+    }
+  },
+  "permissions": [
+    "storage",
+    "tabs"
+  ],
+  "host_permissions": [
+    "https://www.haxball.com/*",
+    "https://haxball.com/*",
+    "https://*.haxball.com/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": [
+        "https://www.haxball.com/*",
+        "https://haxball.com/*",
+        "https://*.haxball.com/*"
+      ],
+      "all_frames": true,
+      "run_at": "document_start",
+      "css": [
+        "css/chicagobulls.css"
+      ],
+      "js": [
+        "js/chicagobulls.js"
+      ]
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "img/logochicago.png",
+        "img/icon128.png",
+        "img/fondo-bulls.svg"
+      ],
+      "matches": [
+        "https://www.haxball.com/*",
+        "https://haxball.com/*",
+        "https://*.haxball.com/*"
+      ]
+    }
+  ]
+}

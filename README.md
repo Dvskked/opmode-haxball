@@ -1,246 +1,214 @@
-# OpMode · Asistente de Cliente para Haxball (v4.0.0)
+# CHICAGO BULLS APP (CBA)
 
-Script 100 % **lado cliente** que se pega en la consola DevTools dentro de
-[`https://www.haxball.com/play`](https://www.haxball.com/play). Dibuja un
-completo **overlay táctico y estético** encima del canvas del juego —líneas,
-radios, trayectorias, predicción con rebotes, HUD de velocidad, alertas de
-peligro, aros de equipo, crosshair y decoración de campo neon con 6 temas— y
-un **menú desplegable** para controlarlo todo al vuelo.
+Identidad visual **Chicago Bulls** para el cliente **real** de HaxBall, implementada como extensión de navegador (Manifest V3). No reemplaza HaxBall, no simula salas y no toca la lógica de conexión: aplica la piel sobre `haxball.com` y conserva todas las funciones originales.
 
-> ## ¿Por qué v4 ya no lagea?
->
-> La versión anterior bajaba los FPS en cuanto pegabas el script. Los 4
-> culpables y su solución (detalladas en [Rendimiento](#rendimiento-y-optimización)):
->
-> | Problema en v3 | Solución en v4 |
-> |---|---|
-> | `shadowBlur` por frame (brillos) | **Glow multicapa** con alpha progresivo (hasta ~50 % más barato). |
-> | Overlay a DPR completo (pantallas HiDPI) | Overlay limitado a **DPR 1.75**. |
-> | Muestreo fijo (2 frames / 320 px / todos los keys) | **Motor adaptativo**: mide cada análisis y auto-regula cadencia (1–6) y resolución (320→160 px). |
-> | Reasignación de buffers y lecturas inútiles | Buffers **reutilizados**, contexto 2D **cacheado**, análisis **pausado** con overlay oculto, en pestañas ocultas o con fuente "custom". |
->
-> Además se **corrigió el mapeo campo → mundo** (`toWorld`), que en v3
-> desplazaba las líneas cuando el campo tiene letterbox o el detector suaviza
-> su rectángulo. Ahora **las líneas encajan exactamente sobre el campo**.
+**Versión 3.1.0** · Desarrollado por **neptunzinho** · Paleta `#CE1141`, negro, gris oscuro y blanco.
+
+![Pantalla de nickname](docs/capturas/01-nickname.png)
+
+| Salas públicas | Herramientas de salas | Ajustes CBA |
+| --- | --- | --- |
+| ![Salas](docs/capturas/02-salas.png) | ![Herramientas](docs/capturas/10-salas-tools.png) | ![Ajustes](docs/capturas/05-ajustes.png) |
 
 ---
 
-## ⚠️ Aviso legal y de uso honesto
+## Estado
 
-Es una **ayuda visual** (pinta encima del lienzo; **no modifica físicas,
-memoria ni red**). En **torneos, ligas o clasificatorias** los overlays suelen
-estar **prohibidos y sancionarse**: úsalo solo para **entrenar**, **salas
-privadas** o **modo libre**. La detección por píxeles es aproximada y puede
-perder el balón un instante; está diseñada para dar contexto visual, no para
-"trucar" un partido en vivo contra otros.
+- **Actualización 3.1.0:** mecánicas reales de HaxBall Zero 2.0.4: `/avatar` para el jugador en cancha, `/colors` para camisetas, atajos rápidos de avatar, marcador CBA, banner de gol, historial/emojis de chat, atajos de administración, salida sin confirmación y keystrokes compacto configurable.
 
----
 
-## ✨ Qué hace (v4)
+- Extensión real sobre el cliente oficial: salas, nickname, chat, partidas, marcador, replays, ajustes y red **sin cambios**.
+- Launcher `npm start` con perfil dedicado, recuperación automática de perfiles bloqueados y verificación de carga de la skin.
+- Centro de ajustes CBA con nueve secciones funcionales: **PERFIL**, **JUGADOR**, **APARIENCIA**, **HUD**, **BALÓN**, **CANCHA**, **SONIDOS**, **RENDIMIENTO** y **MACRO**.
+- Listado de salas con buscador, favoritas persistentes y entrada por enlace/código.
+- Macro de tecla mantenida configurable (por defecto **M** repite **X**).
+- Sin Electron, sin backend propio, sin librerías de UI, sin datos falsos y sin automatizar el juego.
 
-### Ayudas tácticas (ventaja en el juego)
+## Por qué una extensión
 
-| Ayuda | Tecla | Descripción |
-|---|---|---|
-| 🎯 **Línea balón → arco** | `N` | Línea neón del balón al arco **más lejano** (el que atacas), con aro brillante en la boca. |
-| 🧭 **Línea yo → balón** | `J` | Línea amarilla discontinua de tu jugador al balón. |
-| ⭕ **Radio de alcance** | `B` | Aro de contacto alrededor del balón y de tu jugador (verde = en distancia de tiro). |
-| 📈 **Trayectoria corta** | `V` | Flecha con la dirección instantánea del balón (velocidad derivada). |
-| 🔮 **Predicción + rebotes** | `P` | Simula hasta 3 rebotes en las paredes con fricción; marca con **✕ GOAL** si la trayectoria entra en la boca, o punto rojo si pega en el poste. |
-| 💨 **Estela del balón** | `T` | Cola de ~22 posiciones con desvanecido para intuir el ritmo. |
-| 📊 **HUD velocidad / gol** | `U` | Velocidad del balón, tiempo estimado al arco y distancia yo→balón. |
-| 🚨 **Alerta de peligro** | `D` | Anillo rojo pulsante y `!` sobre ti cuando un rival está a < 55 u. |
-| ❌ **Crosshair propio** | `C` | Miras de puntería centradas en tu jugador. |
-| 🔆 **Aros de equipo** | `H` | Aros neón alrededor de cada jugador (rojo/azul) para lectura rápida del campo. |
+El cliente de HaxBall es cerrado y su UI real vive en un iframe del origen `haxball.com`. El endpoint de salas, el `api/client` y el reCAPTCHA están atados a ese origen; un cliente propio no puede unirse a salas reales sin romper la seguridad de HaxBall. Por eso CBA inyecta CSS y mejoras de presentación dentro del **origen permitido**, manteniendo el cliente oficial intacto.
 
-### "Yo" (tu jugador) siempre marcado
+El análisis técnico completo está en [docs/ANALISIS.md](docs/ANALISIS.md).
 
-Tu avatar lleva **triángulo blanco + aro pulsante** de su color. Puedes fijarlo
-manual (`🎯 Soy yo` en el menú y clic sobre tu avatar) o automático (el
-jugador más estable cerca del balón).
+## Requisitos
 
-### Estética y diseño (colores de campo y avatares)
+- Microsoft Edge, Google Chrome o Chromium reciente.
+- Windows, macOS o Linux.
+- Node.js 18 o superior para el launcher y las pruebas.
 
-| Ayuda | Tecla | Descripción |
-|---|---|---|
-| 🏟️ **Decoración de campo** | `G` | Se **redibujan encima** línea de medio campo, círculo central, áreas, esquinas y **bocas de gol** con estilo neon. |
-| 🎨 **6 temas de color** | menú | `neon`, `ice`, `inferno`, `royal`, `toxic`, `gold` — recolorean el decorado, los arcos y el HUD. |
-| 🖍️ **Color y grosor** | menú | 6 colores rápidos de línea principal + slider de grosor 1–10. |
-| ✨ **Brillo neon** | menú | Interruptor del glow multicapa (apágalo para máxima nitidez/FPS). |
-| 🧪 **Demo animada** | menú | Si no hay campo (lobby, cargando), dibuja un partido simulado para ver todas las líneas al instante. |
+## Instalación
 
----
+### Opción A — launcher incluido (recomendada)
 
-## 🛠️ Instalación
-
-1. Entra en [`https://www.haxball.com/play`](https://www.haxball.com/play).
-   Puedes pegar **en la consola de la página principal** o **dentro del
-   iframe del juego**: el script se auto-adapta y sube al documento superior.
-2. `F12` → pestaña **Console**. (Chrome: si avisa *"Don't paste code you do
-   not understand"*, pulsa **Allow pasting** una vez.)
-3. Abre [`opmode-hax.js`](./opmode-hax.js), cópialo **completo** y pégalo +
-   Enter.
-4. Verás el botón **🎯 OP · M** arriba a la derecha. En una sala verás las
-   líneas y el campo decorado; si estás en el lobby, pulsa **M** y activa
-   **Demo** para ver el overlay funcionando.
-
-> La configuración se guarda en `localStorage`: si recargas, vuelve a pegar y
-> tus ajustes se restauran.
-
----
-
-## ⌨️ Controles
-
-| Tecla | Acción | | Tecla | Acción |
-|---|---|---|---|---|
-| **M** | Abrir / cerrar menú | | **T** | Estela del balón |
-| **N** | Línea balón → arco | | **U** | HUD velocidad / gol |
-| **J** | Línea yo → balón | | **D** | Alerta de peligro |
-| **B** | Radio de alcance | | **G** | Decoración de campo |
-| **V** | Trayectoria corta | | **C** | Crosshair propio |
-| **P** | Predicción + rebotes | | **H** | Aros de equipo |
-| **K** | Mostrar / ocultar TODO el overlay | | | |
-
-### Fijar "yo"
-- Menú → **🎯 Soy yo** → clic sobre tu avatar.
-- O `OpMode.setMe(400, 200)` / `OpMode.setMe({x: 400, y: 200})`.
-- `OpMode.resetMe()` o menú → **♻ Auto yo** vuelve al modo automático.
-
----
-
-## 🔌 API de consola
-
-```js
-OpMode.state                      // { source, ball, me, players[], ballSpeed, field, perf, vis }
-OpMode.toggle('predict')          // 'lineBallGoal'|'lineMeBall'|'radius'|'trajectory'|'predict'
-                                  // |'trail'|'hud'|'danger'|'fieldDeco'|'crosshair'|'glowPlayers'
-                                  // |'demo'|'overlay'
-OpMode.setMe(x, y)                // fija "yo"; resetMe() lo vuelve a automático
-OpMode.setBall(x, y)              // override puntual del balón
-OpMode.setPlayers([{x, y, team}]) // override de jugadores (team 1=rojo, 2=azul)
-OpMode.pickMe()                   // modo clic sobre tu avatar
-OpMode.setTheme('ice')            // neon | ice | inferno | royal | toxic | gold
-OpMode.nextTheme()                // cicla temas
-OpMode.setDataSource(fn)          // fuente externa {me, ball, players[]} · null → píxeles
-OpMode.destroy()                  // apaga overlay, menú y bucles
+```bash
+npm install
+npm start
 ```
 
-### Fuente de datos por API (opcional)
+Abre una ventana dedicada con un perfil propio y la extensión cargada. En Windows usa Edge por defecto. Si no lo encuentra, indicá la ruta:
 
-La detección por píxeles funciona en el cliente oficial sin modificar. Si
-tienes tu propia fuente (bot/room externo vía `WebSocket`, etc.) puedes
-enchufarla y OpMode **deja de leer el canvas** (aún menos carga):
-
-```js
-OpMode.setDataSource(() => ({
-  me:   { x: 400, y: 200, team: 1 },
-  ball: { x: 300, y: 150 }
-}));
+```powershell
+$env:CB_BROWSER="C:\ruta\al\msedge.exe"; npm start
 ```
 
----
+El launcher:
 
-## ⚙️ Rendimiento y optimización (cómo lo mantiene a 60 FPS)
+1. Usa un perfil aislado en `%LOCALAPPDATA%\CHICAGOBULLS-APP\profile`.
+2. Detecta entradas de extensión bloqueadas por el navegador.
+3. Si el perfil está bloqueado, lo respalda como `profile.backup-<fecha>` y crea uno limpio.
+4. Migra los ajustes locales de la extensión y verifica que la skin cargó.
 
-1. **La regla de oro**: no se intercepta el `requestAnimationFrame` del juego
-   ni se escribe sobre su canvas. El overlay es un canvas propio encima.
-2. **Lectura mínima**: cada `tickEvery` frames se copia el canvas del juego a
-   una **miniatura ~320 px** con `drawImage` (acelerado por GPU) y se lee
-   `getImageData` de esa miniatura (~200 KB, no 8 MB). Sin `readPixels` grandes.
-3. **Motor adaptativo (`Perf`)**: cada análisis se cronometra con
-   `performance.now()`. Objetivo < ~6 ms:
-   - si tarda más **> 7.5 ms** → sube la cadencia (`tickEvery` 1→6) y baja la
-     resolución (320→160 px);
-   - si tarda menos **< 2.5 ms** → vuelve a subir calidad.
-   El estado actual se ve en el menú y en el HUD: `A2·320px`.
-4. **Brillos sin `shadowBlur`**: el glow se dibuja con 2–3 trazos finos
-   adicionales con alpha creciente. Visualmente parecidos, mucho más baratos.
-5. **Overlay a DPR limitado (1.75)**: en pantallas HiDPI se pintan menos
-   píxeles sin pérdida perceptible.
-6. **Cero lecturas inútiles**: no se analiza si el overlay está oculto (`K`),
-   si la fuente es `custom`, si no hay canvas (Demo) o si la pestaña está
-   oculta.
-7. **Sin asignaciones por frame**: el buffer de componentes conexas se
-   reutiliza, el contexto 2D se cachea y el menú refresca su estado cada
-   ~300 ms (no por frame).
-8. **Detección de máquina débil**: si hay ≤ 2 GB de RAM, ≤ 2 núcleos o un
-   móvil, arranca ya en modo conservador (256 px, cada 3 frames).
+Variables útiles:
 
-> En juegos puestos «en pequeñito» o con el canvas en otra pestaña, puedes
-> ayudarle con `OpMode.toggle` apagando ayudas que no uses y dejando
-> `tickEvery`/`sampleWTarget` a sus valores por defecto.
-
----
-
-## 🔍 Cómo funciona la detección por píxeles
-
-1. Se localiza el `<canvas>` 2D del juego (el más grande con contenido vivo;
-   si el canvas se queda en blanco, prueba el siguiente candidato).
-2. Cada N frames se baja a miniatura y se analiza:
-   - **Campo**: mancha verde → rectángulo del estadio (con EMA para que no
-     vibre). Sirve además para corregir el **letterbox**.
-   - **Balón**: mancha blanca compacta y redonda, con **continuidad temporal**
-     (se premia la posición prevista por la velocidad del cuadro anterior).
-   - **Jugadores**: manchas rojas/azules del tamaño esperado (el radio se
-     escala al mundo real).
-3. Se mapea a coordenadas de mundo (800×400) — mapeo **corregido** en v4 — y
-   se dibuja sobre el overlay. La velocidad se suaviza con EMA para una
-   trayectoria estable.
-
-Ajustes iniciales del script (para expertos):
-- `sampleWTarget` (ancho del análisis; 320, o 256 en máquinas débiles).
-- `tickEvery` (análisis cada N frames; 2, o 3 en máquinas débiles).
-- `adapt` (motor adaptativo; `true`).
-- `holdMs` (cuánto conservar la última detección; 500 ms).
-- `prediction` (tiempo, rebotes, fricción y rebote de la simulación).
-
----
-
-## 🐛 Solución de problemas
-
-| Problema | Solución |
-|---|---|
-| No veo el botón 🎯 OP | Pega en `haxball.com/play` (documento o iframe). Pulsa **K** por si el overlay estaba oculto. En el lobby activa **Demo** desde el menú. |
-| Las líneas no encajan sobre el campo | Asegúrate de que el verde del estadio se detecta (menú: `campo ✓`). Si el estadio es muy oscuro/claro, el campo se marca ✗: elige el canvas correcto recargando o usa Demo. El mapeo v4 corrige el letterbox automáticamente. |
-| Bajaron los FPS tras pegar | Esto **no** debería pasar en v4. Comprueba el `A·px` del menú: si subió (p. ej. `A5·160px`) el motor ya está reduciendo carga. Desactiva **Brillo neon** y ayudas que no uses. |
-| Demo SÍ se ve pero en la sala no | El estadio usa colores fuera de los umbrales (verde, blanco, rojo/azul). Dímelo y ajusto `detectField`/`detectBall`, o usa `OpMode.setDataSource`. |
-| El balón parpadea | Sube `sampleWTarget` tú mismo (edita el inicio del script) o baja el umbral de `Predicción`; la continuidad temporal ayuda pero no es infalible. |
-| No detecta mi jugador (yo ✗) | Usa **🎯 Soy yo** (clic sobre tu avatar). El automático precisa que el avatar tenga borde rojo o azul. |
-| El HUD/décor no aplica tema | Escoge el tema en el menú (o `OpMode.setTheme('gold')`); el color de línea principal se controla aparte con los círculos de color. |
-| Recargué la página | Vuelve a pegar el script (los ajustes se conservan en `localStorage`). |
-| Borrarlo todo | `OpMode.destroy()` o `F5`. Si re-pegas y avisa de instancia activa, primero haz `OpMode.destroy()`. |
-
----
-
-## 🧪 Verificación
-
-- Sintaxis: `node --check opmode-hax.js` ✓
-- Test funcional de arranque/API con DOM simulado (Node) ✓
-- Test de visión con campo+balón+jugadores sintéticos (detección y mapeo
-  campo→mundo dentro de tolerancia ±4 u) ✓
-
----
-
-## 📦 Contenido
-
-```
-opmode-hax/
-├── opmode-hax.js    → el script (pégalo en la consola)
-└── README.md        → esta guía
+```powershell
+$env:CB_PROFILE_DIR="C:\ruta\perfil"   # perfil alternativo
+$env:CB_PROFILE_RESET="1"; npm start   # fuerza perfil nuevo (hace backup)
+$env:CB_HEADLESS="1"; npm start        # verificación sin ventana
 ```
 
-## 📜 Changelog
+### Opción B — carga manual
 
-- **v4.0.0** — Rendimiento: sin `shadowBlur`, DPR 1.75, motor adaptativo,
-  buffers reutilizados, muestreo condicional. Bugs: mapeo `toWorld` corregido.
-  Nuevas ayudas: predicción con rebotes + GOAL/poste, estela, HUD, peligro,
-  crosshair, aros de equipo. Estética: decoración de campo + 6 temas.
-- **v3.0.0** — Detección por `drawImage`→`getImageData` a baja resolución;
-  eliminado el falso camino WebGL; encontrar del campo verde, balón y jugadores.
-- **v2.x** — (histórico) hook de rAF + `readPixels`; descartado por pérdida de
-  FPS y no dibujar nada en cliente actual.
+1. Abrí `edge://extensions` o `chrome://extensions`.
+2. Activá **Modo desarrollador**.
+3. Elegí **Cargar descomprimida** y seleccioná esta carpeta.
+4. Abrí <https://www.haxball.com/play>.
 
----
+> Si el navegador ya estaba abierto con el mismo perfil, cerrá esa ventana y volvé a ejecutar el launcher. Los flags de carga de extensión solo se aplican al iniciar el proceso.
 
-Uso libre para fines educativos y de entrenamiento, bajo tu responsabilidad.
-No afiliado con Haxball ni con su equipo de desarrollo.
+## Uso
+
+1. Escribí tu nickname en la pantalla **CHICAGO BULLS APP (CBA)** y presioná **ENTRAR**.
+2. Elegí una sala del listado real y presioná **UNIRSE** (o doble clic en la fila).
+3. Si HaxBall pide **VERIFICACIÓN HUMANA**, resolvé el reCAPTCHA original.
+4. Abrí **AJUSTES CBA** con el botón flotante para configurar la app.
+5. Usá el cliente como siempre: crear sala, contraseñas, filtros, ajustes, replays, chat y sonidos.
+
+El nickname también se guarda desde el popup. Se almacena en `chrome.storage.local` y se sincroniza con el `localStorage` original (`player_name`) del cliente.
+
+## Centro de ajustes CBA
+
+El botón **AJUSTES CBA** abre un panel sobre el cliente real. Cada control guarda su valor en `chrome.storage.local` y se aplica al instante.
+
+| Sección | Controles |
+| --- | --- |
+| **PERFIL** | Nickname real de HaxBall, avatar local (96×96 WebP), borrar avatar. |
+| **JUGADOR** | Avatar real en cancha con `/avatar`, emojis rápidos, atajos de teclado y camiseta con `/colors` (equipo, ángulo y hasta 3 colores). |
+| **APARIENCIA** | Fondo Bulls, oscuro, sin fondo o imagen propia; tema Bulls/Medianoche/Carbón; animaciones; reducir movimiento; lista compacta; marca de agua. |
+| **HUD** | Keystrokes compacto con posición, escala y opacidad; marcador CBA; ocultar chat/ping-FPS; atajos de administración; salida rápida; historial y emojis de chat. |
+| **BALÓN** | Estilo original, rojo Bulls, neón o monocromático; intensidad 0–100 %. |
+| **CANCHA** | Preset original, clásica, noche o alto contraste; brillo, saturación y contraste. |
+| **SONIDOS** | Cuatro ambientes musicales sintetizados, feedback al patear, aviso de chat de dos tonos, aviso de gol; volúmenes independientes. |
+| **RENDIMIENTO** | Modo rendimiento y prioridad de baja latencia (desactiva filtros del canvas). |
+| **MACRO** | Activar/desactivar, tecla de activación, acción a repetir, acción personalizada, intervalo y prueba. |
+
+### Macro de tecla mantenida
+
+- Por defecto: mantené **M** para repetir **X** cada `180 ms`.
+- Se detiene inmediatamente al soltar la tecla, al perder foco la ventana o al ocultarse la pestaña.
+- Se desactiva mientras escribís en el chat o en cualquier campo de texto.
+- La tecla, la acción y el intervalo son configurables.
+- Solo simula pulsaciones de teclado normales: **no** modifica física, red ni paquetes de HaxBall.
+
+### Buscador y favoritas
+
+- **BUSCAR SALA** filtra el listado real por nombre sin ocultar datos ni inventar salas.
+- La estrella ★ guarda una sala en favoritos; el filtro **FAVORITAS** muestra solo esas salas.
+- **ENLACE O CÓDIGO DE SALA** acepta una URL de HaxBall (`?c=...`) o un código y abre la sala en el cliente real.
+
+### Baja latencia
+
+- **PRIORIZAR BAJA LATENCIA** desactiva los filtros visuales del canvas y las transiciones no esenciales.
+- Para baja latencia real, usá también el ajuste original de HaxBall: **Ajustes → Video → Canvas de baja latencia**.
+- CBA nunca toca el netcode, los WebSockets ni los paquetes del juego.
+
+## Qué cambia visualmente
+
+- Shell de `haxball.com/play`: header CBA, logo, tipografía condensada y fondo oscuro.
+- Pantalla de nickname: logo original `img/logochicago.png`, panel oscuro, subtítulo y botón rojo.
+- Listado de salas: panel compacto, filas de ~33 px, columnas claras, filtros tipo pill, selección roja, contador en español y herramientas CBA.
+- Diálogos de crear sala, ajustes originales, cambio de nickname, conexión y verificación humana.
+- UI dentro de la sala y de la partida: barra de estado, chat, estadísticas, listas de jugadores, marcador, paneles y botones.
+- Menú contextual de administración sobre el nick: **Expulsar**, **Bloquear** e **Información** del jugador.
+- Indicador `ADMIN` visible solo cuando la sala confirma permisos reales.
+- Atribución discreta **“Desarrollado por neptunzinho”** en la interfaz, la partida y los ajustes.
+- Animaciones sutiles y `prefers-reduced-motion` respetado.
+
+Paleta usada: `#080808`, `#111111`, `#191919`, `#CE1141`, `#A30D32`, `#FFFFFF`. Los equipos rojo y azul conservan colores reconocibles.
+
+## Administración de jugadores
+
+- El menú solo se abre al hacer clic en el nombre de un jugador cuando el contenedor real `.room-view.admin` está presente.
+- **Expulsar** reutiliza el diálogo original de HaxBall y envía la expulsión mediante su flujo oficial.
+- **Bloquear** abre la expulsión original, activa “Ban from rejoining” y espera la confirmación; nunca expulsa en silencio.
+- **Información** muestra únicamente datos reales del DOM: nombre, equipo, rol, ping y país.
+- Para jugadores normales no se muestra el menú y se suprime el diálogo administrativo original deshabilitado.
+- La autoridad sigue siendo la de HaxBall: si el cliente original deshabilita la acción, la extensión no la ejecuta.
+
+## Qué se conserva
+
+- Cliente, motor y conexión oficiales de HaxBall.
+- Listado público real y sus datos (sin mocks).
+- Selector y validación de nickname.
+- Contraseñas, creación de salas, cambio de ubicación.
+- reCAPTCHA y verificación humana.
+- Filtros, actualización del listado, ajustes y controles.
+- Replays, sonidos, chat, estadísticas y juego multijugador.
+- WebSocket, WebRTC y almacenamiento original del cliente.
+
+La extensión **no** intercepta tráfico, **no** lee credenciales, **no** automatiza el juego y **no** envía datos a servidores propios.
+
+## Limitaciones conocidas
+
+- **Balón y cancha:** HaxBall dibuja balón, jugadores, césped y líneas en un único canvas. No existe una capa separada del balón. Los ajustes de BALÓN/CANCHA aplican un filtro visual global calibrado como aproximación; por eso el preset de balón también afecta el resto de la escena y no es un cambio aislado del balón; crear un color de balón independiente requeriría modificar el renderizador interno del juego.
+- **Sonidos:** los avisos son sintetizados localmente y complementarios. No se intercepta ni reemplaza el audio original. El feedback de X/espacio es de tecla, no detección exacta de colisión.
+- **Aviso de gol:** se detecta por anuncios reconocibles en el chat; no hay acceso al evento interno exacto.
+- **Web Audio:** requiere una interacción del usuario para desbloquear el audio del navegador.
+- **Selectores:** si HaxBall cambia su DOM o sus textos, algunos estilos o traducciones pueden necesitar actualización.
+- **Navegador:** requiere un Chromium reciente; no hay versión Electron.
+- **Macro:** algunas salas pueden considerar el uso de macros como ventaja. CBA no altera el juego, pero el criterio de uso es del jugador.
+
+## Estructura
+
+```text
+apphaxball/
+├─ manifest.json            Extensión MV3 v3.1.0
+├─ start.js                 Launcher, perfil dedicado y recuperación
+├─ css/chicagobulls.css     Piel completa y centro de ajustes
+├─ js/chicagobulls.js       Branding, ajustes, salas, sonidos y macro
+├─ popup/                   Popup de la extensión
+├─ img/
+│  ├─ logochicago.png       Logo original
+│  └─ fondo-bulls.svg       Fondo temático por defecto
+├─ tests/extension.e2e.js   Prueba E2E con Edge/Chrome real
+├─ docs/                    Análisis y capturas
+├─ README.md
+└─ PROGRESS.md
+```
+
+## Pruebas
+
+```bash
+npm install
+npm test
+```
+
+La prueba E2E abre HaxBall real con la extensión, verifica branding, nickname, listado público, buscador, favoritas, enlace de sala, centro de ajustes, macro, administración por jugador y ausencia de errores JS/consola.
+
+Verificación headless del launcher:
+
+```powershell
+$env:CB_HEADLESS="1"; $env:CB_CLOSE_AFTER_VERIFY="1"; $env:CB_VERIFY_STRICT="1"; node start.js
+```
+
+## Problemas frecuentes
+
+- **La skin no aparece:** ejecutá `npm start` (no abras HaxBall en una ventana normal con el mismo perfil). Si el perfil quedó bloqueado, el launcher lo respalda y crea uno nuevo.
+- **El navegador no abre:** definí `CB_BROWSER` con la ruta a `msedge.exe` o `chrome.exe`.
+- **No suena nada:** activá el control correspondiente y hacé clic una vez en la página para desbloquear Web Audio.
+- **El listado tarda:** el listado es el real de HaxBall y depende de su servidor. El botón **ACTUALIZAR** sigue funcionando.
+
+## Créditos
+
+- Cliente y juego: **HaxBall**.
+- Skin y desarrollo CBA: **neptunzinho**.
+- Logo e identidad: Chicago Bulls, usados como homenaje visual sin afiliación oficial.
