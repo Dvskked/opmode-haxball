@@ -1,16 +1,76 @@
 {
-  "name": "chicagobulls-app",
-  "version": "3.1.0",
+  "name": "chicago-bulls-app",
+  "productName": "Chicago Bulls APP",
+  "version": "1.0.0",
+  "description": "Chicago Bulls APP (CBA) - Cliente de escritorio HaxBall con identidad Chicago Bulls",
+  "main": "main.js",
+  "author": "NEPTUNZINHO <cba@chicagobullsapp.dev>",
+  "contributors": [
+    "NEPTUNZINHO",
+    "NOREIK"
+  ],
+  "license": "MIT",
   "private": true,
-  "description": "CHICAGO BULLS APP (CBA): personalización visual, ajustes y sonidos para el cliente real de HaxBall.",
   "scripts": {
-    "start": "node start.js",
-    "test": "node tests/extension.e2e.js"
+    "start": "electron .",
+    "icons": "node tools/make-icons.js",
+    "postinstall": "node tools/make-icons.js || exit 0",
+    "test": "node tools/check.js",
+    "smoke": "node tools/smoke.js",
+    "dist": "electron-builder --win nsis portable --x64",
+    "dist:portable": "electron-builder --win portable --x64",
+    "dist:nsis": "electron-builder --win nsis --x64"
   },
   "devDependencies": {
-    "playwright-core": "^1.64.1"
+    "electron": "^33.2.0",
+    "electron-builder": "^25.1.8"
   },
-  "engines": {
-    "node": ">=18"
+  "build": {
+    "appId": "dev.chicagobulls.cba",
+    "productName": "Chicago Bulls APP",
+    "copyright": "Copyright (c) 2026 NEPTUNZINHO & NOREIK",
+    "asar": true,
+    "compression": "maximum",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "src/**/*",
+      "assets/**/*",
+      "img/**/*",
+      "package.json",
+      "!tools",
+      "!dist"
+    ],
+    "win": {
+      "icon": "assets/icon.ico",
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "artifactName": "ChicagoBullsAPP-${version}-${arch}.${ext}"
+    },
+    "portable": {
+      "artifactName": "ChicagoBullsAPP-${version}-Portable.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "shortcutName": "Chicago Bulls APP"
+    }
   }
 }
